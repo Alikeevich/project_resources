@@ -1,0 +1,18 @@
+homeassistant: false
+frontend: true
+permit_join: false
+
+mqtt:
+  base_topic: zigbee2mqtt
+  server: 'mqtt://localhost:1883'
+  include_device_information: true
+
+serial:
+  port: /dev/serial0
+  adapter: zstack
+
+advanced:
+  pan_id: __PAN_ID__
+  ext_pan_id: [__EXT_PAN_ID__]
+  network_key: [__NETWORK_KEY__]
+  log_level: info
