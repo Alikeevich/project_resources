@@ -1,0 +1,932 @@
+[
+    {
+        "id": "eb9e037992d49e66",
+        "type": "tab",
+        "label": "сборщик данных девайса и отправщик в брокер",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "4f01fce2bb76b4a3",
+        "type": "tab",
+        "label": "ИСПОЛНИТЕЛЬ КОММАНД",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "8f5ad91c92fb5989",
+        "type": "tab",
+        "label": "СТАТУС СИСТЕМЫ",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "0b04e47e063c4560",
+        "type": "tab",
+        "label": "DATA/SHARE",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "f687cc4867076b7f",
+        "type": "tab",
+        "label": "set global hub_id",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "536da162b7fcdcc8",
+        "type": "tab",
+        "label": "загрузчик сценариев",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "b574ae94850ad117",
+        "type": "tab",
+        "label": "редактор сценариев",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "794ae413063c8cc0",
+        "type": "tab",
+        "label": "движок сценариев",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "da39ac12fcdfcdcb",
+        "type": "tab",
+        "label": "ota manager",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "93539f02eaf405c3",
+        "type": "mqtt-broker",
+        "name": "Local broker",
+        "broker": "localhost",
+        "port": 1883,
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "0c06ccdf871dbbbc",
+        "type": "mqtt-broker",
+        "name": "Cloud broker",
+        "broker": "185.129.94.5",
+        "port": 1883,
+        "clientid": "__HUB_ID__",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "749ea7811a58da1f",
+        "type": "mqtt in",
+        "z": "eb9e037992d49e66",
+        "name": "listen to z2m states local",
+        "topic": "zigbee2mqtt/#",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "93539f02eaf405c3",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 370,
+        "y": 180,
+        "wires": [
+            [
+                "54590cc59102d80d",
+                "a9be9dc999c68ab1"
+            ]
+        ]
+    },
+    {
+        "id": "54590cc59102d80d",
+        "type": "function",
+        "z": "eb9e037992d49e66",
+        "name": "Build cloud topic",
+        "func": "// === ФИНАЛЬНАЯ ВЕРСИЯ КОДА ДЛЯ ПОТОКА №1 (с анонсом новых устройств) ===\n\nlet devices = global.get(\"devices\") || {};\nconst topic = msg.topic;\nconst myHubId = global.get(\"HUB_ID\");\n\n// Функция для отправки анонса\nfunction announceDevice(deviceName) {\n    if (myHubId) {\n        const announceTopic = `iss_ai/hubs/${myHubId}/device_announce`;\n        const announcePayload = {\n            new_device_joined: deviceName\n        };\n        // Мы используем node.send, чтобы создать новое, независимое сообщение\n        node.send({ topic: announceTopic, payload: announcePayload });\n        node.warn(`ANNOUNCE: New device '${deviceName}' announced.`);\n    }\n}\n\n// Проверяем, что payload не пустой, перед парсингом\nif (!msg.payload) return null;\nconst payload = (typeof msg.payload === 'string' && msg.payload.length > 0) ? JSON.parse(msg.payload) : msg.payload;\n\n// --- Обработка списка всех устройств ---\nif (topic === \"zigbee2mqtt/bridge/devices\") {\n    for (const devInfo of payload) {\n        if (devInfo.type === 'Coordinator' || !devInfo.friendly_name) continue;\n\n        const devName = devInfo.friendly_name;\n        // --- ЛОГИКА АНОНСА ---\n        // Если устройства нет в нашей \"базе\", значит оно новое!\n        if (!devices[devName]) {\n            announceDevice(devName); // Отправляем анонс!\n            devices[devName] = {}; // Создаем для него запись\n        }\n\n        devices[devName].manufacturer = devInfo.manufacturer;\n        devices[devName].model = devInfo.definition ? devInfo.definition.model : 'unknown';\n    }\n    global.set(\"devices\", devices);\n    return null;\n}\n\n// --- Обработка обновления состояния ---\nconst parts = topic.split('/');\nif (parts.length === 2 && parts[0] === 'zigbee2mqtt' && parts[1] !== 'bridge') {\n    const devName = parts[1];\n\n    // --- ЛОГИКА АНОНСА ---\n    // Если устройства нет в \"базе\", значит оно новое!\n    if (!devices[devName]) {\n        announceDevice(devName); // Отправляем анонс!\n        devices[devName] = {}; // Создаем для него запись\n    }\n\n    devices[devName].last_payload = payload;\n    global.set(\"devices\", devices);\n\n    if (payload && payload.correlationId) {\n        let responsePayload = { deviceId: devName, ...devices[devName] };\n        msg.topic = `iss_ai/hubs/${myHubId}/devices/${devName}/response`;\n        msg.payload = responsePayload;\n        // Убираем старый выход, так как анонс отправляется через node.send\n        // return msg; // ЭТО БОЛЬШЕ НЕ НУЖНО\n    }\n}\n\n// Этот узел теперь сам отправляет сообщения через node.send,\n// поэтому в конце всегда возвращаем null, чтобы остановить основной поток.\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 720,
+        "y": 180,
+        "wires": [
+            [
+                "c4e23bf38539a256"
+            ]
+        ]
+    },
+    {
+        "id": "c4e23bf38539a256",
+        "type": "mqtt out",
+        "z": "eb9e037992d49e66",
+        "name": "Publish to cloud",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 360,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "a9be9dc999c68ab1",
+        "type": "debug",
+        "z": "eb9e037992d49e66",
+        "name": "debug 2",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "68a1f3b3c2037ec9",
+        "type": "mqtt in",
+        "z": "4f01fce2bb76b4a3",
+        "name": "listen for cloud commands",
+        "topic": "iss_ai/hubs/+/devices/+/command",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "0c06ccdf871dbbbc",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 130,
+        "y": 60,
+        "wires": [
+            [
+                "6fbc72179da8787a"
+            ]
+        ]
+    },
+    {
+        "id": "6fbc72179da8787a",
+        "type": "function",
+        "z": "4f01fce2bb76b4a3",
+        "name": "Build local command",
+        "func": "// Получаем ID нашего хаба из памяти\nconst myHubId = global.get(\"HUB_ID\");\n\n// Получаем ID хаба, которому адресована команда, из топика\n// Topic: iss_ai/hubs/isshub_.../devices/kitchen_light/command\nconst targetHubId = msg.topic.split('/')[2];\n\n// Проверяем, что команда предназначена именно для этого хаба.\n// Это самая важная проверка для изоляции!\nif (!myHubId || myHubId !== targetHubId) {\n    return null; // Игнорируем сообщение, если оно не для нас.\n}\n\n// Извлекаем имя устройства из топика\nconst deviceName = msg.topic.split('/')[4];\n\n// Формируем новый топик, понятный для Z2M\nmsg.topic = `zigbee2mqtt/${deviceName}/set`;\n\n// Полезная нагрузка (msg.payload) уже содержит команду от бэкенда,\n// например {\"state\": \"ON\", \"correlationId\": \"xyz-123\"}.\n// Мы ее не трогаем, просто передаем дальше.\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 60,
+        "wires": [
+            [
+                "e71f760ee82269f2"
+            ]
+        ]
+    },
+    {
+        "id": "e71f760ee82269f2",
+        "type": "mqtt out",
+        "z": "4f01fce2bb76b4a3",
+        "name": "publish to z2m",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "93539f02eaf405c3",
+        "x": 120,
+        "y": 120,
+        "wires": []
+    },
+    {
+        "id": "c19e4a2d44f69634",
+        "type": "inject",
+        "z": "8f5ad91c92fb5989",
+        "name": "every 1 minute",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "60",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 120,
+        "y": 100,
+        "wires": [
+            [
+                "805d0a06912572d9"
+            ]
+        ]
+    },
+    {
+        "id": "805d0a06912572d9",
+        "type": "function",
+        "z": "8f5ad91c92fb5989",
+        "name": "build system status",
+        "func": "// Получаем доступ к разрешенным системным модулям через глобальный контекст\nconst fs = global.get('fs');\nconst os = global.get('os');\nconst execSync = global.get('child_process').execSync;\n\n// --- 1. Получаем HUB_ID ---\nlet hub_id = global.get(\"HUB_ID\"); // Сначала пробуем взять из памяти\nif (!hub_id) { // Если в памяти нет, читаем из файла\n    try {\n        hub_id = fs.readFileSync('/etc/iss_ai_hub/hub_id.txt', 'utf8').trim();\n    } catch (e) {\n        node.error(\"FATAL: Could not read hub_id.txt\", e);\n        return null; // Не можем работать без ID\n    }\n}\n\n// --- 2. Получаем Uptime ---\nlet uptime_str = \"unknown\";\ntry {\n    const uptime_seconds = os.uptime();\n    const days = Math.floor(uptime_seconds / 86400);\n    const hours = Math.floor((uptime_seconds % 86400) / 3600);\n    uptime_str = `up ${days} days, ${hours} hours`;\n} catch (e) { /* Игнорируем ошибку */ }\n\n// --- 3. Получаем IP-адрес ---\nlet wifi_ip = \"N/A\";\ntry {\n    const output = execSync(\"ip -4 addr show wlan0 | grep -oP '(?<=inet\\\\s)\\\\d+(\\\\.\\\\d+){3}'\").toString().trim();\n    if (output) { wifi_ip = output; }\n} catch (e) { /* Игнорируем ошибку */ }\n\n// --- 4. Версия прошивки ---\nconst fw_version = \"2.3.0_RPi_Master\";\n\n// --- 5. Формируем финальный объект и топик ---\nmsg.payload = {\n    hub_id: hub_id,\n    fw_version: fw_version,\n    uptime: uptime_str,\n    wifi_ip: wifi_ip\n};\nmsg.topic = `iss_ai/hubs/${hub_id}/system_status`;\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 150,
+        "y": 200,
+        "wires": [
+            [
+                "39b3a4a45ca31dfb"
+            ]
+        ]
+    },
+    {
+        "id": "39b3a4a45ca31dfb",
+        "type": "mqtt out",
+        "z": "8f5ad91c92fb5989",
+        "name": "Publish system status",
+        "topic": "",
+        "qos": "",
+        "retain": "true",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 380,
+        "y": 380,
+        "wires": []
+    },
+    {
+        "id": "20985a97ab9475a5",
+        "type": "mqtt in",
+        "z": "0b04e47e063c4560",
+        "name": "listen to the SHARE",
+        "topic": "iss_ai/hubs/+/devices/data/share",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "0c06ccdf871dbbbc",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 100,
+        "wires": [
+            [
+                "85ce38ef825a22f0",
+                "2f7b7e31ffb4b144"
+            ]
+        ]
+    },
+    {
+        "id": "85ce38ef825a22f0",
+        "type": "function",
+        "z": "0b04e47e063c4560",
+        "name": "function 1",
+        "func": "// === ФИНАЛЬНАЯ ВЕРСИЯ КОДА ДЛЯ ПОТОКА №4 ===\n\nconst myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\nif (!myHubId || myHubId !== targetHubId) { return null; }\n\nconst devices = global.get(\"devices\") || {};\nconst commandPayload = msg.payload;\nconst correlationId = commandPayload.correlationId;\n\nfunction sendResponse(success, message) {\n    if (correlationId) {\n        const responseTopic = `iss_ai/hubs/${myHubId}/devices/data/response`;\n        node.send([{ topic: responseTopic, payload: { correlationId, success, message } }, null]);\n    }\n}\n\n// --- Обработка стрима ---\nif (commandPayload.stream_target_name) {\n    const targetName = commandPayload.stream_target_name;\n    const duration = (commandPayload.stream_duration_sec || 60) * 1000;\n    const interval = (commandPayload.stream_interval_sec || 5) * 1000;\n    const device = devices[targetName];\n\n    if (device && device.last_payload) {\n        sendResponse(true, `Streaming mode activated for ${targetName}`);\n        let count = 0;\n        const limit = Math.floor(duration / interval);\n        const streamInterval = setInterval(() => {\n            const currentState = (global.get(\"devices\") || {})[targetName];\n            if (!currentState || !currentState.last_payload || count >= limit) {\n                clearInterval(streamInterval);\n                return;\n            }\n            const payloadToSend = { deviceId: targetName, correlationId: correlationId, ...currentState.last_payload };\n            // Отправляем на ВТОРОЙ выход\n            node.send([null, { topic: `iss_ai/hubs/${myHubId}/devices/${targetName}/state`, payload: payloadToSend }]);\n            count++;\n        }, interval);\n    } else {\n        sendResponse(false, `Device ${targetName} not found or has no initial data.`);\n    }\n    \n} else {\n    // Разовая выгрузка\n    sendResponse(true, \"One-time data sync started.\");\n    for (const deviceName in devices) {\n        const deviceData = devices[deviceName];\n        \n        // --- ПРОВЕРКА ОСТАЕТСЯ ТОЙ ЖЕ, НО ТЕПЕРЬ ОНА СРАБОТАЕТ ---\n        if (deviceData && deviceData.last_payload) {\n            const payloadToSend = { \n                deviceId: deviceName,\n                manufacturer: deviceData.manufacturer,\n                model: deviceData.model,\n                correlationId: correlationId,\n                ...deviceData.last_payload\n            };\n            const stateTopic = `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`;\n            node.send([null, { topic: stateTopic, payload: payloadToSend }]);\n        }\n    }\n}\nreturn null;",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 160,
+        "y": 180,
+        "wires": [
+            [
+                "df08750f6afed4d9"
+            ],
+            [
+                "986f14ca61f25869"
+            ]
+        ]
+    },
+    {
+        "id": "df08750f6afed4d9",
+        "type": "mqtt out",
+        "z": "0b04e47e063c4560",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 350,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "986f14ca61f25869",
+        "type": "mqtt out",
+        "z": "0b04e47e063c4560",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 370,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "2f7b7e31ffb4b144",
+        "type": "debug",
+        "z": "0b04e47e063c4560",
+        "name": "debug 1",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 220,
+        "y": 320,
+        "wires": []
+    },
+    {
+        "id": "bdbca43938a0ce21",
+        "type": "inject",
+        "z": "f687cc4867076b7f",
+        "name": "start on reboot/deploy",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "2",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 140,
+        "y": 100,
+        "wires": [
+            [
+                "8700191b2e21985f"
+            ]
+        ]
+    },
+    {
+        "id": "8700191b2e21985f",
+        "type": "exec",
+        "z": "f687cc4867076b7f",
+        "command": "cat /etc/iss_ai_hub/hub_id.txt",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "read hub id file",
+        "x": 140,
+        "y": 200,
+        "wires": [
+            [
+                "52a303671e1e087c"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "52a303671e1e087c",
+        "type": "change",
+        "z": "f687cc4867076b7f",
+        "name": "set global hub_id",
+        "rules": [
+            {
+                "t": "set",
+                "p": "HUB_ID",
+                "pt": "global",
+                "to": "$trim(payload)",
+                "tot": "jsonata"
+            }
+        ],
+        "action": "",
+        "property": "",
+        "from": "",
+        "to": "",
+        "reg": false,
+        "x": 330,
+        "y": 160,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "0f8081be32445f14",
+        "type": "inject",
+        "z": "536da162b7fcdcc8",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "3",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 120,
+        "y": 80,
+        "wires": [
+            [
+                "f4b4bd7cc3742ad3"
+            ]
+        ]
+    },
+    {
+        "id": "f4b4bd7cc3742ad3",
+        "type": "exec",
+        "z": "536da162b7fcdcc8",
+        "command": "cat /home/berkut/scenarios.json",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "",
+        "x": 190,
+        "y": 140,
+        "wires": [
+            [
+                "df73a3613e3bfe3d"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "df73a3613e3bfe3d",
+        "type": "function",
+        "z": "536da162b7fcdcc8",
+        "name": "сохранить сценарии в глобал",
+        "func": "try {\n    // Преобразуем строку из файла в объект JSON\n    const scenarios = JSON.parse(msg.payload);\n    // Сохраняем в глобальную переменную\n    global.set(\"scenarios\", scenarios);\n    node.log(`Successfully loaded ${scenarios.length} scenarios.`);\n} catch (e) {\n    node.error(\"Failed to parse scenarios.json! \" + e.message);\n    // Если файл пустой или некорректный, создаем пустой массив\n    global.set(\"scenarios\", []);\n}\nreturn null; // Ничего не отправляем дальше",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 390,
+        "y": 80,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "65329fdd1e2a925d",
+        "type": "mqtt in",
+        "z": "b574ae94850ad117",
+        "name": "",
+        "topic": "iss_ai/hubs/+/scenarios/#",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "0c06ccdf871dbbbc",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 120,
+        "wires": [
+            [
+                "4be71902116c209e"
+            ]
+        ]
+    },
+    {
+        "id": "4be71902116c209e",
+        "type": "function",
+        "z": "b574ae94850ad117",
+        "name": "function 2",
+        "func": "// Проверяем, что команда для нашего хаба\nconst myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\nif (myHubId !== targetHubId) { return null; }\n\nlet scenarios = global.get(\"scenarios\") || [];\nconst command = msg.topic.split('/')[4]; // 'set' или 'delete'\nconst scenarioName = msg.payload.name;\n\nif (!scenarioName) {\n    node.error(\"Received scenario command without a name.\");\n    return null;\n}\n\n// Удаляем существующий сценарий с таким же именем\nscenarios = scenarios.filter(s => s.name !== scenarioName);\n\n// Если команда 'set', добавляем новый/обновленный сценарий\nif (command === 'set') {\n    scenarios.push(msg.payload); // msg.payload - это уже готовый объект сценария\n    node.log(`Scenario '${scenarioName}' added/updated.`);\n} else if (command === 'delete') {\n    node.log(`Scenario '${scenarioName}' deleted.`);\n}\n\n// Обновляем глобальную переменную и передаем дальше для сохранения в файл\nglobal.set(\"scenarios\", scenarios);\nmsg.payload = scenarios; // Передаем полный массив сценариев\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 140,
+        "y": 240,
+        "wires": [
+            [
+                "bd051fd4bceee4cc"
+            ]
+        ]
+    },
+    {
+        "id": "bd051fd4bceee4cc",
+        "type": "exec",
+        "z": "b574ae94850ad117",
+        "command": "tee /home/berkut/scenarios.json",
+        "addpay": "payload",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "scenarios.json на диск",
+        "x": 400,
+        "y": 200,
+        "wires": [
+            [],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "18c072f280eb4c24",
+        "type": "mqtt in",
+        "z": "794ae413063c8cc0",
+        "name": "",
+        "topic": "zigbee2mqtt/+",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "93539f02eaf405c3",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 110,
+        "y": 60,
+        "wires": [
+            [
+                "889a52ad4e2db427"
+            ]
+        ]
+    },
+    {
+        "id": "889a52ad4e2db427",
+        "type": "function",
+        "z": "794ae413063c8cc0",
+        "name": "function 3",
+        "func": "// Получаем сообщение от датчика, например, msg.topic=\"zigbee2mqtt/датчик_двери\", msg.payload={\"contact\":false}\nconst updatedDeviceName = msg.topic.split('/')[1];\nconst updatedPayload = msg.payload;\n\n// 1. Загружаем ВСЕ сценарии из \"памяти\"\nconst scenarios = global.get(\"scenarios\") || [];\n// 2. Загружаем ПОЛНУЮ \"базу\" состояний всех устройств\nconst allDevices = global.get(\"devices\") || {};\n\n// 3. Проходим по каждому сценарию\nfor (const scenario of scenarios) {\n    if (!scenario.enabled) continue;\n\n    let triggerFired = false;\n    // 4. Проверяем, подходит ли наше событие под триггер сценария\n    for (const trigger of scenario.triggers) {\n        // Проверяем, что триггер для нашего устройства\n        if (trigger.deviceName === updatedDeviceName) {\n            // Проверяем, что в сообщении есть нужный атрибут\n            if (updatedPayload.hasOwnProperty(trigger.attribute)) {\n                // TODO: Реализовать проверку оператора (op: \"==\", \">\", \"<\")\n                // Для простоты пока проверяем на простое равенство\n                if (String(updatedPayload[trigger.attribute]) === trigger.value) {\n                    triggerFired = true;\n                    break; // Нашли подходящий триггер, выходим из цикла\n                }\n            }\n        }\n    }\n\n    // 5. Если триггер сработал, проверяем дополнительные условия\n    if (triggerFired) {\n        let allConditionsMet = true;\n        for (const condition of scenario.conditions) {\n            const deviceToCheck = allDevices[condition.deviceName];\n            // Если устройства для проверки нет или у него нет данных, условие провалено\n            if (!deviceToCheck || !deviceToCheck.last_payload) {\n                allConditionsMet = false;\n                break;\n            }\n            // Проверяем, есть ли нужный атрибут в сохраненных данных\n            if (!deviceToCheck.last_payload.hasOwnProperty(condition.attribute)) {\n                allConditionsMet = false;\n                break;\n            }\n            // TODO: Реализовать проверку оператора (op: \"==\", \">\", \"<\")\n            if (String(deviceToCheck.last_payload[condition.attribute]) !== condition.value) {\n                allConditionsMet = false;\n                break;\n            }\n        }\n\n        // 6. Если все условия выполнены, выполняем действия\n        if (allConditionsMet) {\n            node.warn(`Executing scenario: ${scenario.name}`);\n            for (const action of scenario.actions) {\n                // Формируем и отправляем новое сообщение с командой\n                node.send({\n                    topic: `zigbee2mqtt/${action.deviceName}/set`,\n                    payload: JSON.parse(action.commandJson)\n                });\n            }\n        }\n    }\n}\n\n// Этот узел сам отправляет команды, поэтому основной поток останавливаем\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 140,
+        "y": 180,
+        "wires": [
+            [
+                "43ece0467494f063"
+            ]
+        ]
+    },
+    {
+        "id": "43ece0467494f063",
+        "type": "mqtt out",
+        "z": "794ae413063c8cc0",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "93539f02eaf405c3",
+        "x": 290,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "c091237e78a7f02f",
+        "type": "mqtt in",
+        "z": "da39ac12fcdfcdcb",
+        "name": "",
+        "topic": "iss_ai/hubs/+/ota/command",
+        "qos": "2",
+        "datatype": "utf8",
+        "broker": "0c06ccdf871dbbbc",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 200,
+        "y": 120,
+        "wires": [
+            [
+                "4cbac46828d2f57e"
+            ]
+        ]
+    },
+    {
+        "id": "4cbac46828d2f57e",
+        "type": "function",
+        "z": "da39ac12fcdfcdcb",
+        "name": "Filter & Parse OTA",
+        "func": "// Получаем ID нашего хаба из глобальной переменной\nconst myHubId = global.get(\"HUB_ID\");\n// Получаем ID, на который пришла команда, из топика\nconst targetHubId = msg.topic.split('/')[2];\n\n// Проверяем, что команда адресована нам. Если нет - игнорируем.\nif (myHubId !== targetHubId) {\n    return null; // Останавливаем поток\n}\n\n// Пробуем распарсить входящую строку в JSON\nlet payload;\ntry {\n    payload = JSON.parse(msg.payload);\n} catch (e) {\n    node.error(\"Invalid JSON received in OTA command\", msg);\n    return null; // Останавливаем поток, если JSON \"битый\"\n}\n\n// Проверяем, есть ли в команде обязательное поле 'action'\nif (!payload.action) {\n    node.error(\"OTA command is missing 'action' field\", msg);\n    return null; // Останавливаем поток\n}\n\n// Сохраняем оригинальный payload для будущего ответа\nmsg.original_payload = payload;\n// В основной payload кладем только саму команду для удобства\nmsg.payload = payload.action;\n\n// Отправляем сообщение дальше\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 370,
+        "y": 200,
+        "wires": [
+            [
+                "bbf9d556615c4091"
+            ]
+        ]
+    },
+    {
+        "id": "bbf9d556615c4091",
+        "type": "switch",
+        "z": "da39ac12fcdfcdcb",
+        "name": "route ota action",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "update_core",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "update_z2m",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "update_system",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "reboot",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 4,
+        "x": 500,
+        "y": 280,
+        "wires": [
+            [
+                "cc703a8a869bb17c"
+            ],
+            [
+                "4486c8056e40a9d7"
+            ],
+            [
+                "fa33aaeaec89a303"
+            ],
+            [
+                "1cef990be1c1ff38"
+            ]
+        ]
+    },
+    {
+        "id": "cc703a8a869bb17c",
+        "type": "exec",
+        "z": "da39ac12fcdfcdcb",
+        "command": "sudo /usr/local/bin/update_core.sh",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "300",
+        "winHide": false,
+        "oldrc": false,
+        "name": "core update",
+        "x": 650,
+        "y": 180,
+        "wires": [
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ]
+        ]
+    },
+    {
+        "id": "4486c8056e40a9d7",
+        "type": "exec",
+        "z": "da39ac12fcdfcdcb",
+        "command": "sudo /usr/local/bin/update_z2m.sh",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "300",
+        "winHide": false,
+        "oldrc": false,
+        "name": "run z2m update",
+        "x": 720,
+        "y": 240,
+        "wires": [
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ]
+        ]
+    },
+    {
+        "id": "fa33aaeaec89a303",
+        "type": "exec",
+        "z": "da39ac12fcdfcdcb",
+        "command": "sudo /usr/local/bin/update_system.sh",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "900",
+        "winHide": false,
+        "oldrc": false,
+        "name": "run system update",
+        "x": 730,
+        "y": 320,
+        "wires": [
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ]
+        ]
+    },
+    {
+        "id": "1cef990be1c1ff38",
+        "type": "exec",
+        "z": "da39ac12fcdfcdcb",
+        "command": "sudo /usr/local/bin/reboot.sh",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "30",
+        "winHide": false,
+        "oldrc": false,
+        "name": "run reboot",
+        "x": 650,
+        "y": 380,
+        "wires": [
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ],
+            [
+                "3aea8c787d7492a9"
+            ]
+        ]
+    },
+    {
+        "id": "3aea8c787d7492a9",
+        "type": "function",
+        "z": "da39ac12fcdfcdcb",
+        "name": "format ota response",
+        "func": "// msg.rc содержит код возврата от exec. 0 = успех.\nconst success = (msg.rc && msg.rc.code === 0);\n\n// Формируем полезную нагрузку для ответа\nconst response_payload = {\n    status: success ? \"success\" : \"failure\",\n    // Берем action из сохраненного payload\n    action: msg.original_payload.action,\n    // В details кладем вывод скрипта (stdout или stderr)\n    details: msg.payload,\n    code: msg.rc ? msg.rc.code : null,\n    // Добавляем correlationId, если он был в исходном запросе\n    correlationId: msg.original_payload.correlationId || null\n};\n\n// Переделываем msg для отправки в MQTT\nmsg.payload = response_payload;\nmsg.topic = `iss_ai/hubs/${global.get(\"HUB_ID\")}/ota/response`;\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 980,
+        "y": 280,
+        "wires": [
+            [
+                "544ce6ad94b338b1"
+            ]
+        ]
+    },
+    {
+        "id": "544ce6ad94b338b1",
+        "type": "mqtt out",
+        "z": "da39ac12fcdfcdcb",
+        "name": "publish ota response",
+        "topic": "",
+        "qos": "2",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 1220,
+        "y": 280,
+        "wires": []
+    }
+]
