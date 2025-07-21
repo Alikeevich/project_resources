@@ -13,10 +13,10 @@ echo "--- [$(date)] Starting Hub Core Components update ---"
 
 # --- CONFIGURATION ---
 # !!! REPLACE WITH YOUR GITHUB RAW URL !!!
-BASE_URL="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO_NAME/main"
+BASE_URL="https://raw.githubusercontent.com/Alikeevich/project_resources/main"
 
 # Path to the Node-RED user directory (replace 'admin' if your user is different)
-NODERED_USER_DIR="/home/admin/.node-red"
+NODERED_USER_DIR="/home/berkut/.node-red"
 FLOWS_FILE="${NODERED_USER_DIR}/flows.json"
 FLOWS_BACKUP_FILE="${NODERED_USER_DIR}/flows.json.bak"
 
@@ -31,7 +31,7 @@ echo "Downloading latest flows.json from GitHub..."
 # The --fail flag will cause curl to exit with an error if the download fails (e.g., 404)
 if curl --fail -sL "${BASE_URL}/flows.json" -o "$FLOWS_FILE"; then
     echo "New flows.json downloaded. Validating..."
-    
+
     # Validate the new flows file by attempting a short run of Node-RED
     node-red --settings ${NODERED_USER_DIR}/settings.js "$FLOWS_FILE" &
     CHECK_PID=$!
