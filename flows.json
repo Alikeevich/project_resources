@@ -32,14 +32,6 @@
         "env": []
     },
     {
-        "id": "f687cc4867076b7f",
-        "type": "tab",
-        "label": "set global hub_id",
-        "disabled": false,
-        "info": "",
-        "env": []
-    },
-    {
         "id": "536da162b7fcdcc8",
         "type": "tab",
         "label": "загрузчик сценариев",
@@ -67,6 +59,22 @@
         "id": "da39ac12fcdfcdcb",
         "type": "tab",
         "label": "ota manager",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "87e4e205cb4297dd",
+        "type": "tab",
+        "label": "диспетчер тревог",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "77646ae0e4356714",
+        "type": "tab",
+        "label": "СОПРЯЖЕНИЕ",
         "disabled": false,
         "info": "",
         "env": []
@@ -108,13 +116,13 @@
         "name": "Cloud broker",
         "broker": "185.129.94.5",
         "port": 1883,
-        "clientid": "__HUB_ID__",
+        "clientid": "",
         "autoConnect": true,
         "usetls": false,
         "protocolVersion": 4,
-        "keepalive": 60,
-        "cleansession": true,
-        "autoUnsubscribe": true,
+        "keepalive": "60",
+        "cleansession": false,
+        "autoUnsubscribe": false,
         "birthTopic": "",
         "birthQos": "0",
         "birthRetain": "false",
@@ -132,6 +140,61 @@
         "willMsg": {},
         "userProps": "",
         "sessionExpiry": ""
+    },
+    {
+        "id": "54590cc59102d80d",
+        "type": "function",
+        "z": "eb9e037992d49e66",
+        "name": "Build cloud topic",
+        "func": "// =================================================================\n// === ПЛАТИНОВАЯ ВЕРСИЯ \"Build cloud topic\" (СБОРЩИК) ===\n// === УЧИТЫВАЕТ РАЗНЫЕ ИМЕНА ПОЛЕЙ В ZIGBEE2MQTT ===\n// =================================================================\nlet devices = global.get(\"devices\") || {};\nconst topic = msg.topic;\nconst parts = topic.split('/');\n\n// --- ОБРАБОТКА ПОЛНОГО СПИСКА УСТРОЙСТВ ---\nif (topic === \"zigbee2mqtt/bridge/devices\") {\n    let deviceList;\n    try { deviceList = JSON.parse(msg.payload); } catch (e) { return null; }\n\n    deviceList.forEach(devInfo => {\n        if (devInfo.type === 'Coordinator' || !devInfo.friendly_name) return;\n        \n        const name = devInfo.friendly_name;\n        if (!devices[name]) { devices[name] = {}; }\n        \n        devices[name].manufacturer = devInfo.manufacturer;\n        // Здесь тоже проверяем оба варианта для надежности\n        devices[name].model = (devInfo.definition ? devInfo.definition.model : null) || devInfo.modelID || 'unknown';\n    });\n    \n    global.set(\"devices\", devices);\n    return null;\n}\n\n// --- ОБРАБОТКА СОСТОЯНИЯ КОНКРЕТНОГО УСТРОЙСТВА ---\nif (parts[0] === 'zigbee2mqtt' && parts[1] !== 'bridge') {\n    let payload;\n    try {\n        payload = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;\n        if (typeof payload !== 'object' || payload === null) return null;\n    } catch (e) { return null; }\n\n    const name = parts[1];\n    if (!devices[name]) { devices[name] = {}; }\n\n    // **ГЛАВНОЕ ИСПРАВЛЕНИЕ: ПРОВЕРЯЕМ ОБА ВАРИАНТА**\n    if (payload.device) {\n        if (payload.device.manufacturerName) {\n            devices[name].manufacturer = payload.device.manufacturerName;\n        }\n        // Сначала ищем 'modelID', если его нет - ищем 'model'.\n        const modelIdentifier = payload.device.modelID || payload.device.model;\n        if (modelIdentifier) {\n            devices[name].model = modelIdentifier;\n        }\n    }\n    \n    devices[name].last_payload = payload;\n    global.set(\"devices\", devices);\n\n    if (payload.correlationId) {\n        const myHubId = global.get(\"HUB_ID\");\n        return [null, { /* ваш payload для response */ }];\n    }\n}\n\nreturn null;",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 720,
+        "y": 180,
+        "wires": [
+            [],
+            [
+                "4ac190146191215e"
+            ]
+        ]
+    },
+    {
+        "id": "4ac190146191215e",
+        "type": "mqtt out",
+        "z": "eb9e037992d49e66",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 950,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "a9be9dc999c68ab1",
+        "type": "debug",
+        "z": "eb9e037992d49e66",
+        "name": "debug 2",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 580,
+        "y": 300,
+        "wires": []
     },
     {
         "id": "749ea7811a58da1f",
@@ -156,105 +219,50 @@
         ]
     },
     {
-        "id": "54590cc59102d80d",
-        "type": "function",
-        "z": "eb9e037992d49e66",
-        "name": "Build cloud topic",
-        "func": "// === ФИНАЛЬНАЯ ВЕРСИЯ КОДА ДЛЯ ПОТОКА №1 (с анонсом новых устройств) ===\n\nlet devices = global.get(\"devices\") || {};\nconst topic = msg.topic;\nconst myHubId = global.get(\"HUB_ID\");\n\n// Функция для отправки анонса\nfunction announceDevice(deviceName) {\n    if (myHubId) {\n        const announceTopic = `iss_ai/hubs/${myHubId}/device_announce`;\n        const announcePayload = {\n            new_device_joined: deviceName\n        };\n        // Мы используем node.send, чтобы создать новое, независимое сообщение\n        node.send({ topic: announceTopic, payload: announcePayload });\n        node.warn(`ANNOUNCE: New device '${deviceName}' announced.`);\n    }\n}\n\n// Проверяем, что payload не пустой, перед парсингом\nif (!msg.payload) return null;\nconst payload = (typeof msg.payload === 'string' && msg.payload.length > 0) ? JSON.parse(msg.payload) : msg.payload;\n\n// --- Обработка списка всех устройств ---\nif (topic === \"zigbee2mqtt/bridge/devices\") {\n    for (const devInfo of payload) {\n        if (devInfo.type === 'Coordinator' || !devInfo.friendly_name) continue;\n\n        const devName = devInfo.friendly_name;\n        // --- ЛОГИКА АНОНСА ---\n        // Если устройства нет в нашей \"базе\", значит оно новое!\n        if (!devices[devName]) {\n            announceDevice(devName); // Отправляем анонс!\n            devices[devName] = {}; // Создаем для него запись\n        }\n\n        devices[devName].manufacturer = devInfo.manufacturer;\n        devices[devName].model = devInfo.definition ? devInfo.definition.model : 'unknown';\n    }\n    global.set(\"devices\", devices);\n    return null;\n}\n\n// --- Обработка обновления состояния ---\nconst parts = topic.split('/');\nif (parts.length === 2 && parts[0] === 'zigbee2mqtt' && parts[1] !== 'bridge') {\n    const devName = parts[1];\n\n    // --- ЛОГИКА АНОНСА ---\n    // Если устройства нет в \"базе\", значит оно новое!\n    if (!devices[devName]) {\n        announceDevice(devName); // Отправляем анонс!\n        devices[devName] = {}; // Создаем для него запись\n    }\n\n    devices[devName].last_payload = payload;\n    global.set(\"devices\", devices);\n\n    if (payload && payload.correlationId) {\n        let responsePayload = { deviceId: devName, ...devices[devName] };\n        msg.topic = `iss_ai/hubs/${myHubId}/devices/${devName}/response`;\n        msg.payload = responsePayload;\n        // Убираем старый выход, так как анонс отправляется через node.send\n        // return msg; // ЭТО БОЛЬШЕ НЕ НУЖНО\n    }\n}\n\n// Этот узел теперь сам отправляет сообщения через node.send,\n// поэтому в конце всегда возвращаем null, чтобы остановить основной поток.\nreturn null;",
-        "outputs": 1,
-        "timeout": 0,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 720,
-        "y": 180,
-        "wires": [
-            [
-                "c4e23bf38539a256"
-            ]
-        ]
-    },
-    {
-        "id": "c4e23bf38539a256",
-        "type": "mqtt out",
-        "z": "eb9e037992d49e66",
-        "name": "Publish to cloud",
-        "topic": "",
-        "qos": "",
-        "retain": "",
-        "respTopic": "",
-        "contentType": "",
-        "userProps": "",
-        "correl": "",
-        "expiry": "",
-        "broker": "0c06ccdf871dbbbc",
-        "x": 360,
-        "y": 240,
-        "wires": []
-    },
-    {
-        "id": "a9be9dc999c68ab1",
-        "type": "debug",
-        "z": "eb9e037992d49e66",
-        "name": "debug 2",
-        "active": false,
-        "tosidebar": true,
-        "console": false,
-        "tostatus": false,
-        "complete": "false",
-        "statusVal": "",
-        "statusType": "auto",
-        "x": 580,
-        "y": 300,
-        "wires": []
-    },
-    {
-        "id": "68a1f3b3c2037ec9",
+        "id": "cloud_command_in",
         "type": "mqtt in",
         "z": "4f01fce2bb76b4a3",
-        "name": "listen for cloud commands",
+        "name": "Cloud → Command",
         "topic": "iss_ai/hubs/+/devices/+/command",
         "qos": "2",
         "datatype": "auto-detect",
         "broker": "0c06ccdf871dbbbc",
         "nl": false,
-        "rap": true,
-        "rh": 0,
+        "rap": false,
         "inputs": 0,
-        "x": 130,
-        "y": 60,
+        "x": 430,
+        "y": 240,
         "wires": [
             [
-                "6fbc72179da8787a"
+                "build_z2m_command"
             ]
         ]
     },
     {
-        "id": "6fbc72179da8787a",
+        "id": "build_z2m_command",
         "type": "function",
         "z": "4f01fce2bb76b4a3",
-        "name": "Build local command",
-        "func": "// Получаем ID нашего хаба из памяти\nconst myHubId = global.get(\"HUB_ID\");\n\n// Получаем ID хаба, которому адресована команда, из топика\n// Topic: iss_ai/hubs/isshub_.../devices/kitchen_light/command\nconst targetHubId = msg.topic.split('/')[2];\n\n// Проверяем, что команда предназначена именно для этого хаба.\n// Это самая важная проверка для изоляции!\nif (!myHubId || myHubId !== targetHubId) {\n    return null; // Игнорируем сообщение, если оно не для нас.\n}\n\n// Извлекаем имя устройства из топика\nconst deviceName = msg.topic.split('/')[4];\n\n// Формируем новый топик, понятный для Z2M\nmsg.topic = `zigbee2mqtt/${deviceName}/set`;\n\n// Полезная нагрузка (msg.payload) уже содержит команду от бэкенда,\n// например {\"state\": \"ON\", \"correlationId\": \"xyz-123\"}.\n// Мы ее не трогаем, просто передаем дальше.\nreturn msg;",
+        "name": "Build Z2M command",
+        "func": "// Node-RED Function: Build Z2M command\nconst myHubId = global.get(\"HUB_ID\");\nconst topicParts = msg.topic.split('/');\nconst targetHubId = topicParts[2];\nconst deviceName = topicParts[4];\n\n// Игнорируем команды не для нашего хаба\nif (myHubId !== targetHubId) {\n    return null;\n}\n\n// Сохраняем correlationId в flow-контексте\nconst correlationId = msg.payload.correlationId;\nflow.set(`corr_${deviceName}`, correlationId);\n\n// Формируем топик для отправки в zigbee2mqtt\nmsg.topic = `zigbee2mqtt/${deviceName}/set`;\n\n// Клонируем и дополняем payload\nmsg.payload = {\n    ...msg.payload.payload,\n    correlationId: correlationId\n};\n\nreturn msg;\n",
         "outputs": 1,
-        "timeout": 0,
+        "timeout": "",
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 380,
-        "y": 60,
+        "x": 730,
+        "y": 240,
         "wires": [
             [
-                "e71f760ee82269f2"
+                "mqtt_to_z2m"
             ]
         ]
     },
     {
-        "id": "e71f760ee82269f2",
+        "id": "mqtt_to_z2m",
         "type": "mqtt out",
         "z": "4f01fce2bb76b4a3",
-        "name": "publish to z2m",
+        "name": "Z2M ← Command",
         "topic": "",
         "qos": "",
         "retain": "",
@@ -264,8 +272,87 @@
         "correl": "",
         "expiry": "",
         "broker": "93539f02eaf405c3",
-        "x": 120,
-        "y": 120,
+        "x": 980,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "z2m_device_state",
+        "type": "mqtt in",
+        "z": "4f01fce2bb76b4a3",
+        "name": "Z2M → State",
+        "topic": "zigbee2mqtt/+",
+        "qos": "0",
+        "datatype": "auto-detect",
+        "broker": "93539f02eaf405c3",
+        "nl": false,
+        "rap": false,
+        "inputs": 0,
+        "x": 430,
+        "y": 340,
+        "wires": [
+            [
+                "build_state_response"
+            ]
+        ]
+    },
+    {
+        "id": "build_state_response",
+        "type": "function",
+        "z": "4f01fce2bb76b4a3",
+        "name": "Build Cloud Response",
+        "func": "// =================================================================\n// === УЛУЧШЕННАЯ ВЕРСИЯ \"Build Cloud Response\" (с полными параметрами) ===\n// =================================================================\nconst topicParts = msg.topic.split('/');\nconst deviceName = topicParts[1];\n\n// Игнорируем служебные сообщения\nif (deviceName === 'bridge') {\n    return null;\n}\n\nconst myHubId = global.get(\"HUB_ID\") || \"unknown_hub\";\nlet devices = global.get(\"devices\") || {};\n\n// Получаем текущие данные устройства из нашего кеша\nconst deviceInCache = devices[deviceName];\n\n// Если устройства еще нет в кеше, мы не можем отправить анонс,\n// так как не знаем его производителя и модель. Ждем, пока эта информация придет.\nif (!deviceInCache) {\n    return null;\n}\n\n// --- Формируем ОБЯЗАТЕЛЬНОЕ сообщение о состоянии ---\n// Оно отправляется всегда, когда устройство что-то сообщает.\nconst stateMsg = {\n    topic: `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`,\n    payload: {\n        // ...msg.payload - это \"распаковка\" всех полей из входящего JSON\n        ...msg.payload,\n        // Добавляем наши служебные поля\n        hubId: myHubId,\n        deviceName: deviceName\n    }\n};\n\n// --- Формируем ОПЦИОНАЛЬНОЕ сообщение об анонсе ---\nlet announceMsg = null;\n\n// Главное условие для анонса:\n// 1. Флага 'announced' еще нет или он false.\n// 2. В кеше уже есть информация о производителе и модели.\nif (!deviceInCache.announced && deviceInCache.manufacturer && deviceInCache.model) {\n\n    announceMsg = {\n        topic: `iss_ai/hubs/${myHubId}/device_announce`,\n        payload: {\n            hubId: myHubId,\n            new_device_joined: deviceName,\n            manufacturer: deviceInCache.manufacturer,\n            model: deviceInCache.model,\n            // --- НОВОЕ: Добавляем полное первоначальное состояние ---\n            // msg.payload содержит самое свежее сообщение от устройства,\n            // которое и вызвало этот анонс.\n            parameters: msg.payload\n        }\n    };\n\n    // Устанавливаем флаг, чтобы больше не отправлять анонс для этого устройства\n    deviceInCache.announced = true;\n    global.set(\"devices\", devices);\n}\n\n// Возвращаем оба сообщения. Если announceMsg равен null, Node-RED просто проигнорирует второй выход.\n// stateMsg пойдет в первый выход, announceMsg - во второй.\nreturn [stateMsg, announceMsg];",
+        "outputs": 2,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 760,
+        "y": 400,
+        "wires": [
+            [
+                "mqtt_to_cloud_state"
+            ],
+            [
+                "074a8697d3e1be04"
+            ]
+        ]
+    },
+    {
+        "id": "mqtt_to_cloud_state",
+        "type": "mqtt out",
+        "z": "4f01fce2bb76b4a3",
+        "name": "Cloud ← State",
+        "topic": "",
+        "qos": "0",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 1000,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "074a8697d3e1be04",
+        "type": "mqtt out",
+        "z": "4f01fce2bb76b4a3",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 970,
+        "y": 460,
         "wires": []
     },
     {
@@ -284,12 +371,12 @@
         ],
         "repeat": "60",
         "crontab": "",
-        "once": false,
+        "once": true,
         "onceDelay": 0.1,
         "topic": "",
         "payload": "",
         "payloadType": "date",
-        "x": 120,
+        "x": 380,
         "y": 100,
         "wires": [
             [
@@ -302,14 +389,14 @@
         "type": "function",
         "z": "8f5ad91c92fb5989",
         "name": "build system status",
-        "func": "// Получаем доступ к разрешенным системным модулям через глобальный контекст\nconst fs = global.get('fs');\nconst os = global.get('os');\nconst execSync = global.get('child_process').execSync;\n\n// --- 1. Получаем HUB_ID ---\nlet hub_id = global.get(\"HUB_ID\"); // Сначала пробуем взять из памяти\nif (!hub_id) { // Если в памяти нет, читаем из файла\n    try {\n        hub_id = fs.readFileSync('/etc/iss_ai_hub/hub_id.txt', 'utf8').trim();\n    } catch (e) {\n        node.error(\"FATAL: Could not read hub_id.txt\", e);\n        return null; // Не можем работать без ID\n    }\n}\n\n// --- 2. Получаем Uptime ---\nlet uptime_str = \"unknown\";\ntry {\n    const uptime_seconds = os.uptime();\n    const days = Math.floor(uptime_seconds / 86400);\n    const hours = Math.floor((uptime_seconds % 86400) / 3600);\n    uptime_str = `up ${days} days, ${hours} hours`;\n} catch (e) { /* Игнорируем ошибку */ }\n\n// --- 3. Получаем IP-адрес ---\nlet wifi_ip = \"N/A\";\ntry {\n    const output = execSync(\"ip -4 addr show wlan0 | grep -oP '(?<=inet\\\\s)\\\\d+(\\\\.\\\\d+){3}'\").toString().trim();\n    if (output) { wifi_ip = output; }\n} catch (e) { /* Игнорируем ошибку */ }\n\n// --- 4. Версия прошивки ---\nconst fw_version = \"2.3.0_RPi_Master\";\n\n// --- 5. Формируем финальный объект и топик ---\nmsg.payload = {\n    hub_id: hub_id,\n    fw_version: fw_version,\n    uptime: uptime_str,\n    wifi_ip: wifi_ip\n};\nmsg.topic = `iss_ai/hubs/${hub_id}/system_status`;\n\nreturn msg;",
+        "func": "// Получаем доступ к разрешенным системным модулям\nconst fs = global.get('fs');\nconst os = global.get('os');\nconst execSync = global.get('child_process').execSync;\n\n// --- 1. Получаем HUB_ID и FW_VERSION ---\nlet hub_id = context.get('hub_id');\nlet fw_version = context.get('fw_version');\n\nif (!hub_id) {\n    try {\n        hub_id = fs.readFileSync('/etc/iss_ai_hub/hub_id.txt', 'utf8').trim();\n        context.set('hub_id', hub_id);\n    } catch (e) {\n        // ИСПРАВЛЕНО: Объединяем все в одну строку\n        node.error(`FATAL: Could not read hub_id.txt. Error: ${e.message}`);\n        return null;\n    }\n}\n\nif (!fw_version) {\n    try {\n        fw_version = fs.readFileSync('/etc/iss_ai_hub/version.txt', 'utf8').trim();\n        context.set('fw_version', fw_version);\n    } catch (e) {\n        // ИСПРАВЛЕНО: Объединяем все в одну строку\n        node.warn(`Could not read version.txt, using default. Error: ${e.message}`);\n        fw_version = \"unknown\";\n    }\n}\n\n// --- 2. Получаем Uptime ---\nlet uptime_str = \"unknown\";\ntry {\n    const uptime_seconds = os.uptime();\n    const days = Math.floor(uptime_seconds / 86400);\n    const hours = Math.floor((uptime_seconds % 86400) / 3600);\n    const minutes = Math.floor((uptime_seconds % 3600) / 60);\n    uptime_str = `up ${days}d, ${hours}h, ${minutes}m`;\n} catch (e) { /* Игнорируем */ }\n\n\n// --- 3. Получаем IP-адрес ---\nlet wifi_ip = \"N/A\";\ntry {\n    const output = execSync(\"ip -4 addr show wlan0 | grep -oP '(?<=inet\\\\s)\\\\d+(\\\\.\\\\d+){3}'\").toString().trim();\n    if (output) { wifi_ip = output; }\n} catch (e) { /* Игнорируем */ }\n\n// --- 4. Формируем финальный объект и топик ---\nmsg.payload = {\n    hub_id: hub_id,\n    fw_version: fw_version,\n    uptime: uptime_str,\n    wifi_ip: wifi_ip\n};\nmsg.topic = `iss_ai/hubs/${hub_id}/system_status`;\n\nreturn msg;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 150,
+        "x": 410,
         "y": 200,
         "wires": [
             [
@@ -331,7 +418,7 @@
         "correl": "",
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
-        "x": 380,
+        "x": 640,
         "y": 380,
         "wires": []
     },
@@ -362,7 +449,7 @@
         "type": "function",
         "z": "0b04e47e063c4560",
         "name": "function 1",
-        "func": "// === ФИНАЛЬНАЯ ВЕРСИЯ КОДА ДЛЯ ПОТОКА №4 ===\n\nconst myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\nif (!myHubId || myHubId !== targetHubId) { return null; }\n\nconst devices = global.get(\"devices\") || {};\nconst commandPayload = msg.payload;\nconst correlationId = commandPayload.correlationId;\n\nfunction sendResponse(success, message) {\n    if (correlationId) {\n        const responseTopic = `iss_ai/hubs/${myHubId}/devices/data/response`;\n        node.send([{ topic: responseTopic, payload: { correlationId, success, message } }, null]);\n    }\n}\n\n// --- Обработка стрима ---\nif (commandPayload.stream_target_name) {\n    const targetName = commandPayload.stream_target_name;\n    const duration = (commandPayload.stream_duration_sec || 60) * 1000;\n    const interval = (commandPayload.stream_interval_sec || 5) * 1000;\n    const device = devices[targetName];\n\n    if (device && device.last_payload) {\n        sendResponse(true, `Streaming mode activated for ${targetName}`);\n        let count = 0;\n        const limit = Math.floor(duration / interval);\n        const streamInterval = setInterval(() => {\n            const currentState = (global.get(\"devices\") || {})[targetName];\n            if (!currentState || !currentState.last_payload || count >= limit) {\n                clearInterval(streamInterval);\n                return;\n            }\n            const payloadToSend = { deviceId: targetName, correlationId: correlationId, ...currentState.last_payload };\n            // Отправляем на ВТОРОЙ выход\n            node.send([null, { topic: `iss_ai/hubs/${myHubId}/devices/${targetName}/state`, payload: payloadToSend }]);\n            count++;\n        }, interval);\n    } else {\n        sendResponse(false, `Device ${targetName} not found or has no initial data.`);\n    }\n    \n} else {\n    // Разовая выгрузка\n    sendResponse(true, \"One-time data sync started.\");\n    for (const deviceName in devices) {\n        const deviceData = devices[deviceName];\n        \n        // --- ПРОВЕРКА ОСТАЕТСЯ ТОЙ ЖЕ, НО ТЕПЕРЬ ОНА СРАБОТАЕТ ---\n        if (deviceData && deviceData.last_payload) {\n            const payloadToSend = { \n                deviceId: deviceName,\n                manufacturer: deviceData.manufacturer,\n                model: deviceData.model,\n                correlationId: correlationId,\n                ...deviceData.last_payload\n            };\n            const stateTopic = `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`;\n            node.send([null, { topic: stateTopic, payload: payloadToSend }]);\n        }\n    }\n}\nreturn null;",
+        "func": "// === Node-RED Function: DATA/SHARE ===\n\n// Получаем ID нашего хаба и проверяем топик\nconst myHubId = global.get(\"HUB_ID\");\nconst topicParts = msg.topic.split('/');\nconst targetHubId = topicParts[2];\nif (!myHubId || myHubId !== targetHubId) {\n    return null;\n}\n\n// Загружаем состояния устройств и полезную нагрузку команды\nconst devices = global.get(\"devices\") || {};\nconst commandPayload = msg.payload;\nconst correlationId = commandPayload.correlationId || null;\n\n// Функция для отправки ответа о старте/ошибке\nfunction sendControlResponse(success, message) {\n    if (correlationId) {\n        node.send([{\n            topic: `iss_ai/hubs/${myHubId}/devices/data/response`,\n            payload: {\n                correlationId,\n                hubId: myHubId,\n                success,\n                message\n            }\n        }, null]);\n    }\n}\n\nif (commandPayload.stream_target_name) {\n    // --- Streaming mode ---\n    const targetName = commandPayload.stream_target_name;\n    const duration = (commandPayload.stream_duration_sec || 60) * 1000;\n    const interval = (commandPayload.stream_interval_sec || 5) * 1000;\n    const device = devices[targetName];\n\n    if (device && device.last_payload) {\n        sendControlResponse(true, `Streaming started for ${targetName}`);\n        let count = 0;\n        const limit = Math.floor(duration / interval);\n\n        const timer = setInterval(() => {\n            const current = (global.get(\"devices\") || {})[targetName];\n            if (!current || !current.last_payload || count >= limit) {\n                clearInterval(timer);\n                return;\n            }\n            const outPayload = {\n                deviceId: targetName,\n                hubId: myHubId,\n                correlationId,\n                ...current.last_payload\n            };\n            node.send([null, {\n                topic: `iss_ai/hubs/${myHubId}/devices/${targetName}/state`,\n                payload: outPayload\n            }]);\n            count++;\n        }, interval);\n    } else {\n        sendControlResponse(false, `Device ${targetName} not found or no data`);\n    }\n\n} else {\n    // --- One-time data share ---\n    sendControlResponse(true, \"One-time data sync started\");\n\n    for (const name in devices) {\n        const dev = devices[name];\n        if (!dev || !dev.last_payload) continue;\n\n        const outPayload = {\n            deviceId: name,\n            manufacturer: dev.manufacturer || null,\n            model: dev.model || null,\n            hubId: myHubId,\n            correlationId,\n            ...dev.last_payload\n        };\n        node.send([null, {\n            topic: `iss_ai/hubs/${myHubId}/devices/${name}/state`,\n            payload: outPayload\n        }]);\n    }\n}\n\nreturn null;\n",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -421,7 +508,7 @@
         "type": "debug",
         "z": "0b04e47e063c4560",
         "name": "debug 1",
-        "active": false,
+        "active": true,
         "tosidebar": true,
         "console": false,
         "tostatus": false,
@@ -431,82 +518,6 @@
         "x": 220,
         "y": 320,
         "wires": []
-    },
-    {
-        "id": "bdbca43938a0ce21",
-        "type": "inject",
-        "z": "f687cc4867076b7f",
-        "name": "start on reboot/deploy",
-        "props": [
-            {
-                "p": "payload"
-            },
-            {
-                "p": "topic",
-                "vt": "str"
-            }
-        ],
-        "repeat": "",
-        "crontab": "",
-        "once": true,
-        "onceDelay": "2",
-        "topic": "",
-        "payload": "",
-        "payloadType": "date",
-        "x": 140,
-        "y": 100,
-        "wires": [
-            [
-                "8700191b2e21985f"
-            ]
-        ]
-    },
-    {
-        "id": "8700191b2e21985f",
-        "type": "exec",
-        "z": "f687cc4867076b7f",
-        "command": "cat /etc/iss_ai_hub/hub_id.txt",
-        "addpay": "",
-        "append": "",
-        "useSpawn": "false",
-        "timer": "",
-        "winHide": false,
-        "oldrc": false,
-        "name": "read hub id file",
-        "x": 140,
-        "y": 200,
-        "wires": [
-            [
-                "52a303671e1e087c"
-            ],
-            [],
-            []
-        ]
-    },
-    {
-        "id": "52a303671e1e087c",
-        "type": "change",
-        "z": "f687cc4867076b7f",
-        "name": "set global hub_id",
-        "rules": [
-            {
-                "t": "set",
-                "p": "HUB_ID",
-                "pt": "global",
-                "to": "$trim(payload)",
-                "tot": "jsonata"
-            }
-        ],
-        "action": "",
-        "property": "",
-        "from": "",
-        "to": "",
-        "reg": false,
-        "x": 330,
-        "y": 160,
-        "wires": [
-            []
-        ]
     },
     {
         "id": "0f8081be32445f14",
@@ -664,7 +675,7 @@
         "type": "function",
         "z": "794ae413063c8cc0",
         "name": "function 3",
-        "func": "// Получаем сообщение от датчика, например, msg.topic=\"zigbee2mqtt/датчик_двери\", msg.payload={\"contact\":false}\nconst updatedDeviceName = msg.topic.split('/')[1];\nconst updatedPayload = msg.payload;\n\n// 1. Загружаем ВСЕ сценарии из \"памяти\"\nconst scenarios = global.get(\"scenarios\") || [];\n// 2. Загружаем ПОЛНУЮ \"базу\" состояний всех устройств\nconst allDevices = global.get(\"devices\") || {};\n\n// 3. Проходим по каждому сценарию\nfor (const scenario of scenarios) {\n    if (!scenario.enabled) continue;\n\n    let triggerFired = false;\n    // 4. Проверяем, подходит ли наше событие под триггер сценария\n    for (const trigger of scenario.triggers) {\n        // Проверяем, что триггер для нашего устройства\n        if (trigger.deviceName === updatedDeviceName) {\n            // Проверяем, что в сообщении есть нужный атрибут\n            if (updatedPayload.hasOwnProperty(trigger.attribute)) {\n                // TODO: Реализовать проверку оператора (op: \"==\", \">\", \"<\")\n                // Для простоты пока проверяем на простое равенство\n                if (String(updatedPayload[trigger.attribute]) === trigger.value) {\n                    triggerFired = true;\n                    break; // Нашли подходящий триггер, выходим из цикла\n                }\n            }\n        }\n    }\n\n    // 5. Если триггер сработал, проверяем дополнительные условия\n    if (triggerFired) {\n        let allConditionsMet = true;\n        for (const condition of scenario.conditions) {\n            const deviceToCheck = allDevices[condition.deviceName];\n            // Если устройства для проверки нет или у него нет данных, условие провалено\n            if (!deviceToCheck || !deviceToCheck.last_payload) {\n                allConditionsMet = false;\n                break;\n            }\n            // Проверяем, есть ли нужный атрибут в сохраненных данных\n            if (!deviceToCheck.last_payload.hasOwnProperty(condition.attribute)) {\n                allConditionsMet = false;\n                break;\n            }\n            // TODO: Реализовать проверку оператора (op: \"==\", \">\", \"<\")\n            if (String(deviceToCheck.last_payload[condition.attribute]) !== condition.value) {\n                allConditionsMet = false;\n                break;\n            }\n        }\n\n        // 6. Если все условия выполнены, выполняем действия\n        if (allConditionsMet) {\n            node.warn(`Executing scenario: ${scenario.name}`);\n            for (const action of scenario.actions) {\n                // Формируем и отправляем новое сообщение с командой\n                node.send({\n                    topic: `zigbee2mqtt/${action.deviceName}/set`,\n                    payload: JSON.parse(action.commandJson)\n                });\n            }\n        }\n    }\n}\n\n// Этот узел сам отправляет команды, поэтому основной поток останавливаем\nreturn null;",
+        "func": "// =============================================================================\n//  Продвинутый Движок Сценариев для Node-RED v1.0\n//  Аналог логики хаба ISS AI Hub v2.3\n// =============================================================================\n\n// --- Вспомогательная функция для проверки условий и триггеров ---\n// Она является сердцем нового движка.\nfunction checkCondition(condition, allDevices) {\n    // --- Часть 1: Проверка внутренних условий (время) ---\n    if (condition.deviceName === \"_internal_\") {\n        if (condition.attribute === \"time\") {\n            try {\n                const now = new Date();\n                const currentHour = now.getHours();\n\n                // Парсим время из строки \"HH:MM-HH:MM\"\n                const startHour = parseInt(condition.value.substring(0, 2), 10);\n                const endHour = parseInt(condition.value.substring(6, 8), 10);\n\n                // Проверка на корректность формата\n                if (isNaN(startHour) || isNaN(endHour)) {\n                    node.error(`Неверный формат времени в сценарии: ${condition.value}`);\n                    return false;\n                }\n\n                // Правильная проверка интервала, переходящего через полночь\n                if (startHour > endHour) {\n                    return (currentHour >= startHour || currentHour < endHour);\n                } else {\n                    return (currentHour >= startHour && currentHour < endHour);\n                }\n            } catch (e) {\n                node.error(`Ошибка при проверке времени: ${e.message}`);\n                return false;\n            }\n        }\n        return false; // Неизвестный внутренний атрибут\n    }\n\n    // --- Часть 2: Проверка условий по физическим устройствам ---\n    const device = allDevices[condition.deviceName];\n\n    // Убеждаемся, что устройство существует в базе и у него есть данные\n    if (!device || !device.last_payload) {\n        // Не выводим ошибку, т.к. устройство может быть временно оффлайн\n        return false;\n    }\n\n    // Получаем текущее значение атрибута у устройства\n    const deviceValue = device.last_payload[condition.attribute];\n\n    // Если у устройства нет такого атрибута, условие ложно\n    if (deviceValue === undefined) {\n        return false;\n    }\n\n    // Получаем значение из условия\n    const conditionValue = condition.value;\n\n    // --- Часть 3: Сравнение с учетом оператора и типов данных ---\n    const numDeviceValue = parseFloat(deviceValue);\n    const numConditionValue = parseFloat(conditionValue);\n\n    switch (condition.op) {\n        case \"==\":\n            // Для булевых значений (true/false) сравниваем их правильно\n            if (typeof deviceValue === 'boolean') {\n                return deviceValue === (conditionValue === 'true');\n            }\n            // Для всего остального используем нестрогое сравнение,\n            // чтобы \"100\" было равно 100\n            return deviceValue == conditionValue;\n\n        case \"!=\":\n            if (typeof deviceValue === 'boolean') {\n                return deviceValue !== (conditionValue === 'true');\n            }\n            return deviceValue != conditionValue;\n\n        case \">\":\n            return numDeviceValue > numConditionValue;\n\n        case \"<\":\n            return numDeviceValue < numConditionValue;\n\n        default:\n            node.warn(`Неизвестный оператор в сценарии: ${condition.op}`);\n            return false;\n    }\n}\n\n\n// =============================================================================\n//  Основная логика обработки входящего сообщения\n// =============================================================================\n\n// Получаем данные из входящего MQTT-сообщения\n// msg.topic = \"zigbee2mqtt/corridor_motion_sensor\"\n// msg.payload = {\"contact\": false, \"battery\": 98, ...}\nconst updatedDeviceName = msg.topic.split('/')[1];\nconst updatedPayload = msg.payload;\n\n// Если сообщение не является состоянием устройства, игнорируем его\nif (!updatedDeviceName || typeof updatedPayload !== 'object') {\n    return null;\n}\n\n// Загружаем сценарии и состояния устройств из глобального контекста\nconst scenarios = global.get(\"scenarios\") || [];\nconst allDevices = global.get(\"devices\") || {};\n\n// Создаем \"виртуальную базу данных\" для текущего события, чтобы использовать\n// ту же функцию checkCondition для проверки триггера.\nconst currentStateForTrigger = {\n    [updatedDeviceName]: {\n        last_payload: updatedPayload\n    }\n};\n\n// Проходим по каждому сценарию\nfor (const scenario of scenarios) {\n    if (!scenario.enabled) continue;\n\n    let triggerFired = false;\n    // Проверяем, подходит ли наше событие под один из триггеров\n    for (const trigger of scenario.triggers) {\n        // Проверяем, что триггер для нашего устройства и тип триггера \"device\"\n        if (trigger.deviceName === updatedDeviceName && trigger.type === \"device\") {\n            // Используем нашу новую умную функцию для проверки триггера\n            if (checkCondition(trigger, currentStateForTrigger)) {\n                triggerFired = true;\n                node.log(`Сработал триггер для сценария \"${scenario.name}\" от устройства \"${updatedDeviceName}\"`);\n                break;\n            }\n        }\n    }\n\n    // Если триггер сработал, проверяем дополнительные условия\n    if (triggerFired) {\n        let allConditionsMet = true;\n        for (const condition of scenario.conditions) {\n            // И снова используем нашу умную функцию для проверки условий\n            if (!checkCondition(condition, allDevices)) {\n                allConditionsMet = false;\n                node.log(`  - Условие для \"${scenario.name}\" НЕ выполнено: ${condition.deviceName}.${condition.attribute} ${condition.op} ${condition.value}`);\n                break; // Одно условие не выполнено - вся проверка провалена\n            }\n        }\n\n        // Если все условия выполнены, выполняем действия\n        if (allConditionsMet) {\n            node.warn(`>>> ВЫПОЛНЯЕТСЯ СЦЕНАРИЙ: \"${scenario.name}\"`);\n            for (const action of scenario.actions) {\n                try {\n                    const topic = `zigbee2mqtt/${action.deviceName}/set`;\n                    const payload = JSON.parse(action.commandJson);\n                    \n                    // Отправляем команду в MQTT\n                    node.send({\n                        topic: topic,\n                        payload: payload\n                    });\n                     node.log(`    -> Отправлена команда: топик [${topic}], данные: ${action.commandJson}`);\n                } catch(e) {\n                    node.error(`Ошибка выполнения действия для сценария \"${scenario.name}\": ${e.message}`);\n                }\n            }\n        }\n    }\n}\n\n// Мы сами отправляем сообщения через node.send(), поэтому основной поток останавливаем.\nreturn null;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -903,7 +914,7 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 980,
+        "x": 1020,
         "y": 280,
         "wires": [
             [
@@ -925,8 +936,183 @@
         "correl": "",
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
-        "x": 1220,
+        "x": 1240,
         "y": 280,
+        "wires": []
+    },
+    {
+        "id": "b400ff2dad893981",
+        "type": "mqtt in",
+        "z": "87e4e205cb4297dd",
+        "name": "слушать все",
+        "topic": "zigbee2mqtt/+",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "93539f02eaf405c3",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 100,
+        "wires": [
+            [
+                "f7661da9b1b62caf"
+            ]
+        ]
+    },
+    {
+        "id": "f7661da9b1b62caf",
+        "type": "switch",
+        "z": "87e4e205cb4297dd",
+        "name": "",
+        "property": "payload",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "hask",
+                "v": "contact",
+                "vt": "str"
+            },
+            {
+                "t": "hask",
+                "v": "water_leak",
+                "vt": "str"
+            },
+            {
+                "t": "hask",
+                "v": "smoke",
+                "vt": "str"
+            },
+            {
+                "t": "hask",
+                "v": "occupancy",
+                "vt": "str"
+            },
+            {
+                "t": "hask",
+                "v": "tamper",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 5,
+        "x": 150,
+        "y": 340,
+        "wires": [
+            [
+                "5494846f0b5540c6"
+            ],
+            [
+                "5494846f0b5540c6"
+            ],
+            [
+                "5494846f0b5540c6"
+            ],
+            [
+                "5494846f0b5540c6"
+            ],
+            [
+                "5494846f0b5540c6"
+            ]
+        ]
+    },
+    {
+        "id": "5494846f0b5540c6",
+        "type": "function",
+        "z": "87e4e205cb4297dd",
+        "name": "function 4",
+        "func": "// Получаем имя устройства из топика (например, \"0x54ef441000beeae5\")\nconst deviceName = msg.topic.split('/')[1];\n\n// Получаем payload\nconst payload = msg.payload;\n\nlet alarmType = null;\nlet alarmValue = null;\n\n// --- Логика определения типа тревоги ---\n// Вы можете расширять этот блок, добавляя новые типы датчиков\n\n// Датчик открытия/закрытия (contact sensor)\nif (payload.hasOwnProperty('contact')) {\n    // Тревога, если 'contact' == false (дверь/окно открыто)\n    if (payload.contact === false) {\n        alarmType = \"contact_opened\";\n        alarmValue = true;\n    }\n    // Можно также отправлять сообщение о закрытии\n    // else {\n    //     alarmType = \"contact_closed\";\n    //     alarmValue = false; // или true, в зависимости от вашей логики\n    // }\n}\n\n// Датчик протечки воды\nelse if (payload.hasOwnProperty('water_leak')) {\n    // Тревога, если 'water_leak' == true\n    if (payload.water_leak === true) {\n        alarmType = \"water_leak_detected\";\n        alarmValue = true;\n    }\n}\n\n// Датчик дыма\nelse if (payload.hasOwnProperty('smoke')) {\n    if (payload.smoke === true) {\n        alarmType = \"smoke_detected\";\n        alarmValue = true;\n    }\n}\n\n// Датчик присутствия (occupancy)\nelse if (payload.hasOwnProperty('occupancy')) {\n    if (payload.occupancy === true) {\n        alarmType = \"motion_detected\"; // Называем \"motion\", т.к. это более общее понятие\n        alarmValue = true;\n    }\n}\n\n// --- Если тревога была обнаружена ---\nif (alarmType !== null) {\n    // Формируем новый payload для тревоги\n    msg.payload = {\n        deviceName: deviceName,\n        alarm_type: alarmType,\n        alarm_value: alarmValue,\n        // Добавим timestamp для точности\n        timestamp: Date.now()\n    };\n\n    // Формируем новый топик\n    const HUB_ID = global.get(\"HUB_ID\");\n    if (HUB_ID) {\n        msg.topic = `iss_ai/hubs/${HUB_ID}/alarm`;\n        // Отправляем сообщение дальше\n        return msg;\n    } else {\n        node.error(\"HUB_ID not set, cannot send alarm.\");\n        return null;\n    }\n}\n\n// Если ни одно из условий не сработало, просто не отправляем ничего\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 340,
+        "y": 180,
+        "wires": [
+            [
+                "e6dc03cae852d29c"
+            ]
+        ]
+    },
+    {
+        "id": "e6dc03cae852d29c",
+        "type": "mqtt out",
+        "z": "87e4e205cb4297dd",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 410,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "89a47177d760580d",
+        "type": "mqtt in",
+        "z": "77646ae0e4356714",
+        "name": "z2m конроль моста",
+        "topic": "iss_ai/hubs/+/bridge/command",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "0c06ccdf871dbbbc",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 100,
+        "wires": [
+            [
+                "2a8f62230978477a"
+            ]
+        ]
+    },
+    {
+        "id": "2a8f62230978477a",
+        "type": "function",
+        "z": "77646ae0e4356714",
+        "name": "фильр и путь",
+        "func": "const myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\n\nif (myHubId !== targetHubId) {\n    return null;\n}\n\nlet payload;\ntry {\n    payload = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n} catch (e) {\n    node.error(\"Invalid JSON in command\", msg);\n    return null;\n}\n\n\n// Проверяем, какая именно команда пришла\nif (payload.command === 'permit_join') {\n    // Формируем новый топик\n    msg.topic = 'zigbee2mqtt/bridge/request/permit_join';\n\n    // --- ГЛАВНОЕ ИЗМЕНЕНИЕ ---\n    // Мы не преобразуем payload.value в строку!\n    // Мы передаем его \"как есть\" (булево true/false или число).\n    msg.payload = payload.value;\n\n    return msg;\n}\n\n// Здесь можно добавить другие команды для bridge (log_level, reset, etc.)\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 180,
+        "y": 160,
+        "wires": [
+            [
+                "9c3d91a3b712bbbc"
+            ]
+        ]
+    },
+    {
+        "id": "9c3d91a3b712bbbc",
+        "type": "mqtt out",
+        "z": "77646ae0e4356714",
+        "name": "отправка в локалку",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "93539f02eaf405c3",
+        "x": 340,
+        "y": 200,
         "wires": []
     }
 ]
