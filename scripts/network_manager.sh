@@ -49,4 +49,3 @@ echo "  - Starting Provisioning API..."
 python3 /usr/local/bin/provision_api.py
 
 echo "Provisioning API stopped. System should be rebooting now."
-
