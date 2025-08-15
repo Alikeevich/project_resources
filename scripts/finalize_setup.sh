@@ -57,34 +57,3 @@ fi
 
 # --- 4. Генерация конфигурационного файла Zigbee2MQTT ---
 echo "Creating Zigbee2MQTT configuration..."
-if [ ! -f "$TEMPLATE_FILE" ]; then
-    echo "FATAL: Z2M Template file not found at $TEMPLATE_FILE"
-    exit 1
-fi
-
-TEMP_CONFIG="/tmp/configuration.yaml.tmp"
-sed -e "s|__HUB_ID__|$HUB_ID|g" \
-    -e "s|__PAN_ID__|$PAN_ID|g" \
-    -e "s|__EXT_PAN_ID__|$EXT_PAN_ID|g" \
-    -e "s|__NETWORK_KEY__|$NETWORK_KEY|g" \
-    "$TEMPLATE_FILE" > "$TEMP_CONFIG"
-
-mv "$TEMP_CONFIG" "$CONFIG_FILE"
-# Устанавливаем правильного владельца для всех данных Z2M
-chown -R "$APP_USER:$APP_USER" /opt/zigbee2mqtt/data
-
-echo "Zigbee2MQTT configuration created."
-
-# --- 5. Запуск и включение runtime-сервисов ---
-echo "Enabling and starting runtime services..."
-# Перечитываем конфигурацию systemd на случай изменений
-systemctl daemon-reload
-systemctl enable --now mosquitto.service
-systemctl enable --now nodered.service
-systemctl enable --now zigbee2mqtt.service
-
-# --- 6. Отключение менеджера AP-режима ---
-echo "Disabling AP provisioning manager..."
-systemctl disable --now network-manager-script.service
-
-echo "--- Finalize Setup Completed Successfully ---"
