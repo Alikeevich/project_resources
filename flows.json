@@ -80,6 +80,13 @@
         "env": []
     },
     {
+        "id": "a1b2c3d4.e5f6g7",
+        "type": "tab",
+        "label": "ГОЛОСОВОЙ АССИСТЕНТ (ФИНАЛ)",
+        "disabled": false,
+        "info": "Полное управление процессом распознавания ключевых слов с явным перезапуском."
+    },
+    {
         "id": "93539f02eaf405c3",
         "type": "mqtt-broker",
         "name": "Local broker",
@@ -146,8 +153,8 @@
         "type": "function",
         "z": "eb9e037992d49e66",
         "name": "Build cloud topic",
-        "func": "// =================================================================\n// === ПЛАТИНОВАЯ ВЕРСИЯ \"Build cloud topic\" (СБОРЩИК) ===\n// === УЧИТЫВАЕТ РАЗНЫЕ ИМЕНА ПОЛЕЙ В ZIGBEE2MQTT ===\n// =================================================================\nlet devices = global.get(\"devices\") || {};\nconst topic = msg.topic;\nconst parts = topic.split('/');\n\n// --- ОБРАБОТКА ПОЛНОГО СПИСКА УСТРОЙСТВ ---\nif (topic === \"zigbee2mqtt/bridge/devices\") {\n    let deviceList;\n    try { deviceList = JSON.parse(msg.payload); } catch (e) { return null; }\n\n    deviceList.forEach(devInfo => {\n        if (devInfo.type === 'Coordinator' || !devInfo.friendly_name) return;\n        \n        const name = devInfo.friendly_name;\n        if (!devices[name]) { devices[name] = {}; }\n        \n        devices[name].manufacturer = devInfo.manufacturer;\n        // Здесь тоже проверяем оба варианта для надежности\n        devices[name].model = (devInfo.definition ? devInfo.definition.model : null) || devInfo.modelID || 'unknown';\n    });\n    \n    global.set(\"devices\", devices);\n    return null;\n}\n\n// --- ОБРАБОТКА СОСТОЯНИЯ КОНКРЕТНОГО УСТРОЙСТВА ---\nif (parts[0] === 'zigbee2mqtt' && parts[1] !== 'bridge') {\n    let payload;\n    try {\n        payload = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;\n        if (typeof payload !== 'object' || payload === null) return null;\n    } catch (e) { return null; }\n\n    const name = parts[1];\n    if (!devices[name]) { devices[name] = {}; }\n\n    // **ГЛАВНОЕ ИСПРАВЛЕНИЕ: ПРОВЕРЯЕМ ОБА ВАРИАНТА**\n    if (payload.device) {\n        if (payload.device.manufacturerName) {\n            devices[name].manufacturer = payload.device.manufacturerName;\n        }\n        // Сначала ищем 'modelID', если его нет - ищем 'model'.\n        const modelIdentifier = payload.device.modelID || payload.device.model;\n        if (modelIdentifier) {\n            devices[name].model = modelIdentifier;\n        }\n    }\n    \n    devices[name].last_payload = payload;\n    global.set(\"devices\", devices);\n\n    if (payload.correlationId) {\n        const myHubId = global.get(\"HUB_ID\");\n        return [null, { /* ваш payload для response */ }];\n    }\n}\n\nreturn null;",
-        "outputs": 2,
+        "func": "// =============================================================================\n// ==      ЦЕНТРАЛЬНЫЙ ОБРАБОТЧИК ДАННЫХ v6.0 (Классификация + Сохранение + Отправка)     ==\n// =============================================================================\n\nconst topic = msg.topic;\nconst devices = global.get(\"devices\") || {};\n\n// --- ЧАСТЬ 1: Игнорируем топики, обрабатываемые другими потоками на этой вкладке ---\nif (topic.endsWith('/availability')) {\n    return null;\n}\n\n// --- ЧАСТЬ 2: Обработка полного списка устройств (bridge/devices) ---\nif (topic === \"zigbee2mqtt/bridge/devices\") {\n    let deviceList;\n    try {\n        deviceList = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n    } catch (e) {\n        node.error(\"Classifier: Failed to parse device list JSON\", msg);\n        return null;\n    }\n\n    deviceList.forEach(devInfo => {\n        if (devInfo.type === 'Coordinator' || !devInfo.friendly_name) return;\n        \n        const name = devInfo.friendly_name;\n        if (!devices[name]) { devices[name] = {}; }\n\n        // Запускаем основную логику классификации по \"паспорту\"\n        classifyDevice(devices[name], devInfo, null);\n    });\n\n    node.log(`Device cache initialized/updated with ${Object.keys(devices).length} devices.`);\n    global.set(\"devices\", devices);\n    return null; // Список устройств не нужно отправлять в облако\n}\n\n// --- ЧАСТЬ 3: Обработка состояний конкретного устройства ---\nconst parts = topic.split('/');\nif (parts[0] === 'zigbee2mqtt' && parts.length === 2 && parts[1] !== 'bridge') {\n    const deviceName = parts[1];\n    const payload = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n\n    if (!devices[deviceName]) { devices[deviceName] = {}; }\n\n    // --- КЛЮЧЕВОЙ МОМЕНТ: СОХРАНЯЕМ ПОСЛЕДНЕЕ СОСТОЯНИЕ ---\n    devices[deviceName].last_payload = payload;\n\n    // Уточняем классификацию, используя данные из payload\n    classifyDevice(devices[deviceName], (payload.device || {}), payload);\n    \n    // Сохраняем обновленный кеш\n    global.set(\"devices\", devices);\n\n    // --- ТЕПЕРЬ ФОРМИРУЕМ И ОТПРАВЛЯЕМ СОСТОЯНИЕ В ОБЛАКО ---\n    const deviceInCache = devices[deviceName];\n    const myHubId = global.get(\"HUB_ID\") || \"unknown_hub\";\n\n    const flatPayload = {};\n    for (const key in payload) {\n        if (key !== 'device' && payload.hasOwnProperty(key)) {\n            flatPayload[key] = payload[key];\n        }\n    }\n    \n    msg.topic = `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`;\n    msg.payload = {\n        ...flatPayload,\n        hubId: myHubId,\n        deviceName: deviceName,\n        device_type: deviceInCache.type || 'unknown',\n        controllable: deviceInCache.controllable || false,\n        // Раз пришли данные, устройство точно онлайн\n        availability: true\n    };\n    \n    // Возвращаем готовое сообщение для отправки в облако\n    return msg; \n}\n\n// Игнорируем все остальные топики (например, bridge/log)\nreturn null;\n\n\n// =============================================================================\n// ==            ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ КЛАССИФИКАЦИИ (встроена)             ==\n// =============================================================================\nfunction classifyDevice(deviceObject, devInfo, payload) {\n    const definition = devInfo.definition || {};\n\n    if (devInfo.manufacturer) deviceObject.manufacturer = devInfo.manufacturer;\n    if (definition.model) deviceObject.model = definition.model;\n    if (devInfo.power_source) deviceObject.power_source = devInfo.power_source;\n\n    const exposes = definition.exposes || [];\n    const features = new Set(exposes.map(f => f.property));\n    const featureTypes = new Set(exposes.map(f => f.type));\n    \n    let deviceType = deviceObject.type || 'generic';\n\n    if (featureTypes.has('light') && features.has('color_xy')) {\n        deviceType = 'light_color';\n    } else if (featureTypes.has('light') && features.has('brightness')) {\n        deviceType = 'light_dimmable';\n    } else if (featureTypes.has('light')) {\n        deviceType = 'light_on_off';\n    } else if (featureTypes.has('switch')) {\n        deviceType = 'switch';\n    } else if (features.has('contact')) {\n        deviceType = 'sensor_contact';\n    } else if (features.has('occupancy')) {\n        deviceType = 'sensor_motion';\n    } else if (features.has('water_leak')) {\n        deviceType = 'sensor_leak';\n    } else if (features.has('smoke')) {\n        deviceType = 'sensor_smoke';\n    } else if (features.has('action')) {\n        if (deviceObject.power_source === 'Mains (single phase)') {\n            deviceType = 'wall_switch';\n        } else {\n            deviceType = 'button';\n        }\n    } else if (features.has('state')) {\n        deviceType = 'switch';\n    } else if (features.has('temperature') || features.has('humidity') || features.has('illuminance')) {\n        deviceType = 'sensor_environment';\n    }\n    \n    if (payload) {\n        if (payload.switch_type === 'toggle') {\n            deviceType = 'switch_toggle';\n        } else if (payload.switch_type === 'momentary') {\n            deviceType = 'switch_button';\n        }\n    }\n    \n    deviceObject.type = deviceType;\n\n    let isControllable = false;\n    if (exposes.length > 0) {\n        for (const feature of exposes) {\n            if (feature.access && (feature.access & 2)) {\n                isControllable = true;\n                break;\n            }\n        }\n        deviceObject.controllable = isControllable;\n    }\n}",
+        "outputs": 1,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -156,7 +163,6 @@
         "x": 720,
         "y": 180,
         "wires": [
-            [],
             [
                 "4ac190146191215e"
             ]
@@ -217,6 +223,65 @@
                 "a9be9dc999c68ab1"
             ]
         ]
+    },
+    {
+        "id": "e473a1360db9f9af",
+        "type": "mqtt in",
+        "z": "eb9e037992d49e66",
+        "name": "listen to z2m availability",
+        "topic": "zigbee2mqtt/+/availability",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "93539f02eaf405c3",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 400,
+        "y": 420,
+        "wires": [
+            [
+                "8782b683543a41b2"
+            ]
+        ]
+    },
+    {
+        "id": "8782b683543a41b2",
+        "type": "function",
+        "z": "eb9e037992d49e66",
+        "name": "function 6",
+        "func": "// =============================================================================\n// ==     НАДЕЖНЫЙ ОБРАБОТЧИК ДОСТУПНОСТИ v2.0 (Кеш + Немедленная отправка)   ==\n// =============================================================================\n\nconst deviceName = msg.topic.split('/')[1];\nif (deviceName === 'bridge') return null;\n\nconst isOnline = (msg.payload === 'online');\n\n// --- 1. Обновляем кеш ---\nconst devices = global.get(\"devices\") || {};\nif (!devices[deviceName]) { devices[deviceName] = {}; }\ndevices[deviceName].availability = isOnline;\nglobal.set(\"devices\", devices);\n\n// --- 2. Готовим и отправляем полное состояние в облако НЕМЕДЛЕННО ---\nconst myHubId = global.get(\"HUB_ID\") || \"unknown_hub\";\nconst deviceInCache = devices[deviceName];\n\n// Берем последнее известное состояние или пустой объект\nconst lastPayload = deviceInCache.last_payload || {};\n\n// \"Выравниваем\" JSON\nconst flatPayload = {};\nfor (const key in lastPayload) {\n    if (key !== 'device') { flatPayload[key] = lastPayload[key]; }\n}\n\n// Формируем топик для облака\nmsg.topic = `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`;\n\n// Формируем финальный payload, добавляя ВСЕ данные из кеша\nmsg.payload = {\n    ...flatPayload,\n    // САМОЕ ГЛАВНОЕ: добавляем актуальный статус доступности\n    availability: isOnline,\n    \n    hubId: myHubId,\n    deviceName: deviceName,\n    device_type: deviceInCache.type || 'unknown',\n    controllable: deviceInCache.controllable || false\n};\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 600,
+        "y": 420,
+        "wires": [
+            [
+                "703413a4258b15c9"
+            ]
+        ]
+    },
+    {
+        "id": "703413a4258b15c9",
+        "type": "mqtt out",
+        "z": "eb9e037992d49e66",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 610,
+        "y": 520,
+        "wires": []
     },
     {
         "id": "cloud_command_in",
@@ -289,7 +354,7 @@
         "rap": false,
         "inputs": 0,
         "x": 430,
-        "y": 340,
+        "y": 400,
         "wires": [
             [
                 "build_state_response"
@@ -301,7 +366,7 @@
         "type": "function",
         "z": "4f01fce2bb76b4a3",
         "name": "Build Cloud Response",
-        "func": "// =================================================================\n// === УЛУЧШЕННАЯ ВЕРСИЯ \"Build Cloud Response\" (с полными параметрами) ===\n// =================================================================\nconst topicParts = msg.topic.split('/');\nconst deviceName = topicParts[1];\n\n// Игнорируем служебные сообщения\nif (deviceName === 'bridge') {\n    return null;\n}\n\nconst myHubId = global.get(\"HUB_ID\") || \"unknown_hub\";\nlet devices = global.get(\"devices\") || {};\n\n// Получаем текущие данные устройства из нашего кеша\nconst deviceInCache = devices[deviceName];\n\n// Если устройства еще нет в кеше, мы не можем отправить анонс,\n// так как не знаем его производителя и модель. Ждем, пока эта информация придет.\nif (!deviceInCache) {\n    return null;\n}\n\n// --- Формируем ОБЯЗАТЕЛЬНОЕ сообщение о состоянии ---\n// Оно отправляется всегда, когда устройство что-то сообщает.\nconst stateMsg = {\n    topic: `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`,\n    payload: {\n        // ...msg.payload - это \"распаковка\" всех полей из входящего JSON\n        ...msg.payload,\n        // Добавляем наши служебные поля\n        hubId: myHubId,\n        deviceName: deviceName\n    }\n};\n\n// --- Формируем ОПЦИОНАЛЬНОЕ сообщение об анонсе ---\nlet announceMsg = null;\n\n// Главное условие для анонса:\n// 1. Флага 'announced' еще нет или он false.\n// 2. В кеше уже есть информация о производителе и модели.\nif (!deviceInCache.announced && deviceInCache.manufacturer && deviceInCache.model) {\n\n    announceMsg = {\n        topic: `iss_ai/hubs/${myHubId}/device_announce`,\n        payload: {\n            hubId: myHubId,\n            new_device_joined: deviceName,\n            manufacturer: deviceInCache.manufacturer,\n            model: deviceInCache.model,\n            // --- НОВОЕ: Добавляем полное первоначальное состояние ---\n            // msg.payload содержит самое свежее сообщение от устройства,\n            // которое и вызвало этот анонс.\n            parameters: msg.payload\n        }\n    };\n\n    // Устанавливаем флаг, чтобы больше не отправлять анонс для этого устройства\n    deviceInCache.announced = true;\n    global.set(\"devices\", devices);\n}\n\n// Возвращаем оба сообщения. Если announceMsg равен null, Node-RED просто проигнорирует второй выход.\n// stateMsg пойдет в первый выход, announceMsg - во второй.\nreturn [stateMsg, announceMsg];",
+        "func": "// =============================================================================\n// ==           ТРАНСЛЯТОР СОСТОЯНИЙ v5.0 (Production Ready)                  ==\n// == Задача: Слушать сообщения от устройств, ВЫРАВНИВАТЬ JSON,             ==\n// == ОБОГАЩАТЬ данными из кеша и отправлять в облако.                     ==\n// =============================================================================\n\nconst topicParts = msg.topic.split('/');\nconst deviceName = topicParts[1];\n\nif (deviceName === 'bridge') {\n    return null;\n}\n\n// --- 1. Загружаем все необходимые данные ---\nconst myHubId = global.get(\"HUB_ID\") || \"unknown_hub\";\nconst devices = global.get(\"devices\") || {};\nconst deviceInCache = devices[deviceName];\n\nif (!deviceInCache) {\n    node.warn(`Received state from '${deviceName}' but it's not in cache yet. Ignoring.`);\n    return null;\n}\n\n// --- 2. \"Выравниваем\" JSON ---\nconst flatPayload = {};\nconst rawPayload = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n\nfor (const key in rawPayload) {\n    if (key !== 'device' && rawPayload.hasOwnProperty(key)) {\n        flatPayload[key] = rawPayload[key];\n    }\n}\nif (rawPayload.device) {\n    if (rawPayload.device.manufacturerName) {\n        flatPayload.manufacturer = rawPayload.device.manufacturerName;\n    }\n    if (rawPayload.device.modelID) {\n        flatPayload.model = rawPayload.device.modelID;\n    }\n}\n\n// --- 3. Формируем ОБЯЗАТЕЛЬНОЕ сообщение о состоянии ---\nconst stateMsg = {\n    topic: `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`,\n    payload: {\n        ...flatPayload,\n        hubId: myHubId,\n        deviceName: deviceName,\n        // --- ДОБАВЛЯЕМ ОБОГАЩЕННЫЕ ДАННЫЕ ИЗ КЕША ---\n        device_type: deviceInCache.type || 'unknown',\n        controllable: deviceInCache.controllable || false\n    }\n};\n\n// --- 4. Формируем ОПЦИОНАЛЬНОЕ сообщение об анонсе ---\nlet announceMsg = null;\nif (!deviceInCache.announced && deviceInCache.manufacturer && deviceInCache.model) {\n    announceMsg = {\n        topic: `iss_ai/hubs/${myHubId}/device_announce`,\n        payload: {\n            hubId: myHubId,\n            new_device_joined: deviceName,\n            manufacturer: deviceInCache.manufacturer,\n            model: deviceInCache.model,\n            device_type: deviceInCache.type || 'unknown',\n            controllable: deviceInCache.controllable || false,\n            parameters: flatPayload\n        }\n    };\n    \n    deviceInCache.announced = true;\n    global.set(\"devices\", devices);\n}\n\nreturn [stateMsg, announceMsg];",
         "outputs": 2,
         "timeout": "",
         "noerr": 0,
@@ -376,8 +441,8 @@
         "topic": "",
         "payload": "",
         "payloadType": "date",
-        "x": 380,
-        "y": 100,
+        "x": 200,
+        "y": 200,
         "wires": [
             [
                 "805d0a06912572d9"
@@ -419,7 +484,7 @@
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
         "x": 640,
-        "y": 380,
+        "y": 200,
         "wires": []
     },
     {
@@ -449,7 +514,7 @@
         "type": "function",
         "z": "0b04e47e063c4560",
         "name": "function 1",
-        "func": "// === Node-RED Function: DATA/SHARE ===\n\n// Получаем ID нашего хаба и проверяем топик\nconst myHubId = global.get(\"HUB_ID\");\nconst topicParts = msg.topic.split('/');\nconst targetHubId = topicParts[2];\nif (!myHubId || myHubId !== targetHubId) {\n    return null;\n}\n\n// Загружаем состояния устройств и полезную нагрузку команды\nconst devices = global.get(\"devices\") || {};\nconst commandPayload = msg.payload;\nconst correlationId = commandPayload.correlationId || null;\n\n// Функция для отправки ответа о старте/ошибке\nfunction sendControlResponse(success, message) {\n    if (correlationId) {\n        node.send([{\n            topic: `iss_ai/hubs/${myHubId}/devices/data/response`,\n            payload: {\n                correlationId,\n                hubId: myHubId,\n                success,\n                message\n            }\n        }, null]);\n    }\n}\n\nif (commandPayload.stream_target_name) {\n    // --- Streaming mode ---\n    const targetName = commandPayload.stream_target_name;\n    const duration = (commandPayload.stream_duration_sec || 60) * 1000;\n    const interval = (commandPayload.stream_interval_sec || 5) * 1000;\n    const device = devices[targetName];\n\n    if (device && device.last_payload) {\n        sendControlResponse(true, `Streaming started for ${targetName}`);\n        let count = 0;\n        const limit = Math.floor(duration / interval);\n\n        const timer = setInterval(() => {\n            const current = (global.get(\"devices\") || {})[targetName];\n            if (!current || !current.last_payload || count >= limit) {\n                clearInterval(timer);\n                return;\n            }\n            const outPayload = {\n                deviceId: targetName,\n                hubId: myHubId,\n                correlationId,\n                ...current.last_payload\n            };\n            node.send([null, {\n                topic: `iss_ai/hubs/${myHubId}/devices/${targetName}/state`,\n                payload: outPayload\n            }]);\n            count++;\n        }, interval);\n    } else {\n        sendControlResponse(false, `Device ${targetName} not found or no data`);\n    }\n\n} else {\n    // --- One-time data share ---\n    sendControlResponse(true, \"One-time data sync started\");\n\n    for (const name in devices) {\n        const dev = devices[name];\n        if (!dev || !dev.last_payload) continue;\n\n        const outPayload = {\n            deviceId: name,\n            manufacturer: dev.manufacturer || null,\n            model: dev.model || null,\n            hubId: myHubId,\n            correlationId,\n            ...dev.last_payload\n        };\n        node.send([null, {\n            topic: `iss_ai/hubs/${myHubId}/devices/${name}/state`,\n            payload: outPayload\n        }]);\n    }\n}\n\nreturn null;\n",
+        "func": "// =============================================================================\n// ==           DATA/SHARE v4.2 (Исправленная версия с Availability)          ==\n// =============================================================================\n\n// --- 1. Фильтрация и подготовка ---\nconst myHubId = global.get(\"HUB_ID\");\nconst topicParts = msg.topic.split('/');\nconst targetHubId = topicParts[2];\n\nif (!myHubId || myHubId !== targetHubId) {\n    return null;\n}\n\nconst devices = global.get(\"devices\") || {};\nconst commandPayload = msg.payload;\nconst correlationId = commandPayload.correlationId || null;\n\n// --- 2. Универсальная функция форматирования (ОБНОВЛЕНА!) ---\nfunction formatDevicePayload(deviceName, deviceInCache) {\n    // Условие выхода: нет самого устройства или нет его последнего состояния\n    if (!deviceInCache || !deviceInCache.last_payload) {\n        return null;\n    }\n\n    // --- Шаг 2.1: \"Выравниваем\" JSON ---\n    const flatPayload = {};\n    const rawPayload = deviceInCache.last_payload;\n\n    for (const key in rawPayload) {\n        if (key !== 'device' && rawPayload.hasOwnProperty(key)) {\n            flatPayload[key] = rawPayload[key];\n        }\n    }\n    if (rawPayload.device) {\n        if (rawPayload.device.manufacturerName) {\n            flatPayload.manufacturer = rawPayload.device.manufacturerName;\n        }\n        if (rawPayload.device.modelID) {\n            flatPayload.model = rawPayload.device.modelID;\n        }\n    }\n\n    // --- Шаг 2.2: Формируем финальный \"обогащенный\" payload ---\n    return {\n        ...flatPayload,\n        deviceId: deviceName,\n        manufacturer: deviceInCache.manufacturer || flatPayload.manufacturer,\n        model: deviceInCache.model || flatPayload.model,\n        hubId: myHubId,\n        correlationId: correlationId,\n        device_type: deviceInCache.type || 'unknown',\n        controllable: deviceInCache.controllable || false,\n        // --- ГЛАВНОЕ ИЗМЕНЕНИЕ: Включаем статус доступности из кеша ---\n        availability: (deviceInCache.availability !== undefined) ? deviceInCache.availability : true\n    };\n}\n\n\n// --- 3. Вспомогательная функция для отправки ответа ---\nfunction sendControlResponse(success, message) {\n    if (correlationId) {\n        // Отправляем сообщение в ПЕРВЫЙ выход узла\n        node.send([{\n            topic: `iss_ai/hubs/${myHubId}/devices/data/response`,\n            payload: {\n                correlationId: correlationId,\n                hubId: myHubId,\n                success: success,\n                message: message\n            }\n        }, null]);\n    }\n}\n\n// --- 4. Логика для режима Streaming Mode ---\nif (commandPayload.stream_target_name) {\n    const targetName = commandPayload.stream_target_name;\n    const duration = (commandPayload.stream_duration_sec || 60) * 1000;\n    const interval = (commandPayload.stream_interval_sec || 5) * 1000;\n\n    const device = devices[targetName];\n    if (device && device.last_payload) {\n        sendControlResponse(true, `Streaming started for ${targetName}`);\n        let count = 0;\n        const limit = Math.floor(duration / interval);\n\n        const timer = setInterval(() => {\n            const currentDeviceInCache = (global.get(\"devices\") || {})[targetName];\n            if (!currentDeviceInCache || !currentDeviceInCache.last_payload || count >= limit) {\n                clearInterval(timer);\n                return;\n            }\n\n            const formattedPayload = formatDevicePayload(targetName, currentDeviceInCache);\n            if (formattedPayload) {\n                // Отправляем данные во ВТОРОЙ выход узла\n                node.send([null, {\n                    topic: `iss_ai/hubs/${myHubId}/devices/${targetName}/state`,\n                    payload: formattedPayload\n                }]);\n            }\n            count++;\n        }, interval);\n\n    } else {\n        sendControlResponse(false, `Device ${targetName} not found or no data`);\n    }\n    // В асинхронном режиме (с setInterval) основной поток нужно остановить\n    return null;\n}\n\n\n// --- 5. Логика для One-time data share ---\nsendControlResponse(true, \"One-time data sync started\");\n\nfor (const deviceName in devices) {\n    const deviceInCache = devices[deviceName];\n    const formattedPayload = formatDevicePayload(deviceName, deviceInCache);\n\n    if (formattedPayload) {\n        // Отправляем данные во ВТОРОЙ выход узла\n        node.send([null, {\n            topic: `iss_ai/hubs/${myHubId}/devices/${deviceName}/state`,\n            payload: formattedPayload\n        }]);\n    }\n}\n\n// Мы сами управляли отправкой через node.send, поэтому основной поток останавливаем\nreturn null;",
         "outputs": 2,
         "timeout": 0,
         "noerr": 0,
@@ -482,7 +547,7 @@
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
         "x": 350,
-        "y": 180,
+        "y": 160,
         "wires": []
     },
     {
@@ -499,8 +564,8 @@
         "correl": "",
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
-        "x": 370,
-        "y": 240,
+        "x": 350,
+        "y": 220,
         "wires": []
     },
     {
@@ -515,8 +580,8 @@
         "complete": "false",
         "statusVal": "",
         "statusType": "auto",
-        "x": 220,
-        "y": 320,
+        "x": 440,
+        "y": 100,
         "wires": []
     },
     {
@@ -560,8 +625,8 @@
         "winHide": false,
         "oldrc": false,
         "name": "",
-        "x": 190,
-        "y": 140,
+        "x": 230,
+        "y": 160,
         "wires": [
             [
                 "df73a3613e3bfe3d"
@@ -582,7 +647,7 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 390,
+        "x": 410,
         "y": 80,
         "wires": [
             []
@@ -621,8 +686,8 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 140,
-        "y": 240,
+        "x": 400,
+        "y": 120,
         "wires": [
             [
                 "bd051fd4bceee4cc"
@@ -641,8 +706,8 @@
         "winHide": false,
         "oldrc": false,
         "name": "scenarios.json на диск",
-        "x": 400,
-        "y": 200,
+        "x": 640,
+        "y": 120,
         "wires": [
             [],
             [],
@@ -682,8 +747,8 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 140,
-        "y": 180,
+        "x": 300,
+        "y": 60,
         "wires": [
             [
                 "43ece0467494f063"
@@ -704,8 +769,8 @@
         "correl": "",
         "expiry": "",
         "broker": "93539f02eaf405c3",
-        "x": 290,
-        "y": 260,
+        "x": 490,
+        "y": 60,
         "wires": []
     },
     {
@@ -721,8 +786,8 @@
         "rap": true,
         "rh": 0,
         "inputs": 0,
-        "x": 200,
-        "y": 120,
+        "x": 160,
+        "y": 240,
         "wires": [
             [
                 "4cbac46828d2f57e"
@@ -741,8 +806,8 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 370,
-        "y": 200,
+        "x": 430,
+        "y": 540,
         "wires": [
             [
                 "bbf9d556615c4091"
@@ -781,7 +846,7 @@
         "checkall": "true",
         "repair": false,
         "outputs": 4,
-        "x": 500,
+        "x": 540,
         "y": 280,
         "wires": [
             [
@@ -810,7 +875,7 @@
         "winHide": false,
         "oldrc": false,
         "name": "core update",
-        "x": 650,
+        "x": 690,
         "y": 180,
         "wires": [
             [
@@ -836,7 +901,7 @@
         "winHide": false,
         "oldrc": false,
         "name": "run z2m update",
-        "x": 720,
+        "x": 760,
         "y": 240,
         "wires": [
             [
@@ -862,7 +927,7 @@
         "winHide": false,
         "oldrc": false,
         "name": "run system update",
-        "x": 730,
+        "x": 770,
         "y": 320,
         "wires": [
             [
@@ -888,7 +953,7 @@
         "winHide": false,
         "oldrc": false,
         "name": "run reboot",
-        "x": 650,
+        "x": 690,
         "y": 380,
         "wires": [
             [
@@ -914,7 +979,7 @@
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 1020,
+        "x": 1060,
         "y": 280,
         "wires": [
             [
@@ -936,7 +1001,7 @@
         "correl": "",
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
-        "x": 1240,
+        "x": 1280,
         "y": 280,
         "wires": []
     },
@@ -957,63 +1022,6 @@
         "y": 100,
         "wires": [
             [
-                "f7661da9b1b62caf"
-            ]
-        ]
-    },
-    {
-        "id": "f7661da9b1b62caf",
-        "type": "switch",
-        "z": "87e4e205cb4297dd",
-        "name": "",
-        "property": "payload",
-        "propertyType": "msg",
-        "rules": [
-            {
-                "t": "hask",
-                "v": "contact",
-                "vt": "str"
-            },
-            {
-                "t": "hask",
-                "v": "water_leak",
-                "vt": "str"
-            },
-            {
-                "t": "hask",
-                "v": "smoke",
-                "vt": "str"
-            },
-            {
-                "t": "hask",
-                "v": "occupancy",
-                "vt": "str"
-            },
-            {
-                "t": "hask",
-                "v": "tamper",
-                "vt": "str"
-            }
-        ],
-        "checkall": "true",
-        "repair": false,
-        "outputs": 5,
-        "x": 150,
-        "y": 340,
-        "wires": [
-            [
-                "5494846f0b5540c6"
-            ],
-            [
-                "5494846f0b5540c6"
-            ],
-            [
-                "5494846f0b5540c6"
-            ],
-            [
-                "5494846f0b5540c6"
-            ],
-            [
                 "5494846f0b5540c6"
             ]
         ]
@@ -1023,7 +1031,7 @@
         "type": "function",
         "z": "87e4e205cb4297dd",
         "name": "function 4",
-        "func": "// Получаем имя устройства из топика (например, \"0x54ef441000beeae5\")\nconst deviceName = msg.topic.split('/')[1];\n\n// Получаем payload\nconst payload = msg.payload;\n\nlet alarmType = null;\nlet alarmValue = null;\n\n// --- Логика определения типа тревоги ---\n// Вы можете расширять этот блок, добавляя новые типы датчиков\n\n// Датчик открытия/закрытия (contact sensor)\nif (payload.hasOwnProperty('contact')) {\n    // Тревога, если 'contact' == false (дверь/окно открыто)\n    if (payload.contact === false) {\n        alarmType = \"contact_opened\";\n        alarmValue = true;\n    }\n    // Можно также отправлять сообщение о закрытии\n    // else {\n    //     alarmType = \"contact_closed\";\n    //     alarmValue = false; // или true, в зависимости от вашей логики\n    // }\n}\n\n// Датчик протечки воды\nelse if (payload.hasOwnProperty('water_leak')) {\n    // Тревога, если 'water_leak' == true\n    if (payload.water_leak === true) {\n        alarmType = \"water_leak_detected\";\n        alarmValue = true;\n    }\n}\n\n// Датчик дыма\nelse if (payload.hasOwnProperty('smoke')) {\n    if (payload.smoke === true) {\n        alarmType = \"smoke_detected\";\n        alarmValue = true;\n    }\n}\n\n// Датчик присутствия (occupancy)\nelse if (payload.hasOwnProperty('occupancy')) {\n    if (payload.occupancy === true) {\n        alarmType = \"motion_detected\"; // Называем \"motion\", т.к. это более общее понятие\n        alarmValue = true;\n    }\n}\n\n// --- Если тревога была обнаружена ---\nif (alarmType !== null) {\n    // Формируем новый payload для тревоги\n    msg.payload = {\n        deviceName: deviceName,\n        alarm_type: alarmType,\n        alarm_value: alarmValue,\n        // Добавим timestamp для точности\n        timestamp: Date.now()\n    };\n\n    // Формируем новый топик\n    const HUB_ID = global.get(\"HUB_ID\");\n    if (HUB_ID) {\n        msg.topic = `iss_ai/hubs/${HUB_ID}/alarm`;\n        // Отправляем сообщение дальше\n        return msg;\n    } else {\n        node.error(\"HUB_ID not set, cannot send alarm.\");\n        return null;\n    }\n}\n\n// Если ни одно из условий не сработало, просто не отправляем ничего\nreturn null;",
+        "func": "// =================================================================\n// === УНИВЕРСАЛЬНЫЙ ДИСПЕТЧЕР ТРЕВОГ v4 (с уровнями и всеми типами) ===\n// =================================================================\n\nconst deviceName = msg.topic.split('/')[1];\nif (deviceName === 'bridge') {\n    return null;\n}\n\nconst payload = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\nif (typeof payload !== 'object' || payload === null) {\n    return null;\n}\n\nlet alarmType = null;    // Тип события (e.g., 'contact', 'motion')\nlet alarmState = null;   // Состояние: true (ТРЕВОГА) / false (НОРМА)\nlet alarmLevel = null;   // Важность: 'high', 'medium', 'low'\nlet isAlarmEvent = false; // Флаг, что это релевантное событие\n\n// -----------------------------------------------------------------\n// --- БИБЛИОТЕКА ОПРЕДЕЛЕНИЯ ТРЕВОГ ---\n// -----------------------------------------------------------------\n\n// --- ВЫСОКИЙ УРОВЕНЬ ВАЖНОСТИ (Critical) ---\n\nif (payload.hasOwnProperty('water_leak')) {\n    isAlarmEvent = true;\n    alarmType = \"water_leak\";\n    alarmState = (payload.water_leak === true);\n    alarmLevel = \"high\";\n}\nelse if (payload.hasOwnProperty('smoke')) {\n    isAlarmEvent = true;\n    alarmType = \"smoke\";\n    alarmState = (payload.smoke === true);\n    alarmLevel = \"high\";\n}\nelse if (payload.hasOwnProperty('gas')) {\n    isAlarmEvent = true;\n    alarmType = \"gas\";\n    alarmState = (payload.gas === true);\n    alarmLevel = \"high\";\n}\nelse if (payload.hasOwnProperty('carbon_monoxide')) {\n    isAlarmEvent = true;\n    alarmType = \"carbon_monoxide\";\n    alarmState = (payload.carbon_monoxide === true);\n    alarmLevel = \"high\";\n}\nelse if (payload.hasOwnProperty('tamper')) {\n    // Вскрытие корпуса датчика\n    isAlarmEvent = true;\n    alarmType = \"tamper\";\n    alarmState = (payload.tamper === true);\n    alarmLevel = \"high\";\n}\n\n// --- СРЕДНИЙ УРОВЕНЬ ВАЖНОСТИ (Warning) ---\n\nelse if (payload.hasOwnProperty('contact')) {\n    isAlarmEvent = true;\n    alarmType = \"contact\";\n    alarmState = (payload.contact === false); // Тревога, когда контакт РАЗОМКНУТ (false)\n    alarmLevel = \"medium\";\n}\nelse if (payload.hasOwnProperty('vibration')) {\n    isAlarmEvent = true;\n    alarmType = \"vibration\";\n    alarmState = (payload.vibration === true);\n    alarmLevel = \"medium\";\n}\nelse if (payload.hasOwnProperty('battery_low')) {\n    // Некоторые датчики сообщают о низком заряде как о событии\n    isAlarmEvent = true;\n    alarmType = \"battery_low\";\n    alarmState = (payload.battery_low === true);\n    alarmLevel = \"medium\";\n}\n\n// --- НИЗКИЙ УРОВЕНЬ ВАЖНОСТИ (Info) ---\n\nelse if (payload.hasOwnProperty('occupancy')) {\n    isAlarmEvent = true;\n    alarmType = \"motion\"; // Используем более понятное имя\n    alarmState = (payload.occupancy === true);\n    alarmLevel = \"medium\";\n}\nelse if (payload.hasOwnProperty('presence')) {\n    // Датчики присутствия (mmWave/радарные)\n    isAlarmEvent = true;\n    alarmType = \"presence\";\n    alarmState = (payload.presence === true);\n    alarmLevel = \"medium\";\n} \n\n// --- ФОРМИРОВАНИЕ И ОТПРАВКА СООБЩЕНИЯ ---\n\nif (isAlarmEvent) {\n    const HUB_ID = global.get(\"HUB_ID\");\n    if (!HUB_ID) {\n        node.error(\"HUB_ID not set, cannot send alarm.\");\n        return null;\n    }\n\n    // Формируем финальный payload\n    msg.payload = {\n        device_id: deviceName,\n        alarm_type: alarmType,\n        alarm_state: alarmState,\n        // Если тревога активна (true), ставим уровень (high/medium/low).\n        // Если тревога снята (false), ставим \"cleared\".\n        alarm_level: alarmState ? alarmLevel : \"cleared\",\n        timestamp: Date.now()\n    };\n\n    // Формируем топик\n    msg.topic = `iss_ai/hubs/${HUB_ID}/alarm`;\n    \n    return msg;\n}\n\n// Если входящее сообщение не содержит ни одного из отслеживаемых атрибутов,\n// оно игнорируется, и поток на этом завершается.\nreturn null;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -1031,7 +1039,7 @@
         "finalize": "",
         "libs": [],
         "x": 340,
-        "y": 180,
+        "y": 100,
         "wires": [
             [
                 "e6dc03cae852d29c"
@@ -1052,8 +1060,8 @@
         "correl": "",
         "expiry": "",
         "broker": "0c06ccdf871dbbbc",
-        "x": 410,
-        "y": 280,
+        "x": 510,
+        "y": 100,
         "wires": []
     },
     {
@@ -1082,18 +1090,19 @@
         "type": "function",
         "z": "77646ae0e4356714",
         "name": "фильр и путь",
-        "func": "const myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\n\nif (myHubId !== targetHubId) {\n    return null;\n}\n\nlet payload;\ntry {\n    payload = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n} catch (e) {\n    node.error(\"Invalid JSON in command\", msg);\n    return null;\n}\n\n\n// Проверяем, какая именно команда пришла\nif (payload.command === 'permit_join') {\n    // Формируем новый топик\n    msg.topic = 'zigbee2mqtt/bridge/request/permit_join';\n\n    // --- ГЛАВНОЕ ИЗМЕНЕНИЕ ---\n    // Мы не преобразуем payload.value в строку!\n    // Мы передаем его \"как есть\" (булево true/false или число).\n    msg.payload = payload.value;\n\n    return msg;\n}\n\n// Здесь можно добавить другие команды для bridge (log_level, reset, etc.)\nreturn null;",
+        "func": "// Получаем ID нашего хаба и проверяем, что команда адресована нам\nconst myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\nif (myHubId !== targetHubId) {\n    return null;\n}\n\n// Парсим payload\nlet payload;\ntry {\n    payload = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n} catch (e) {\n    node.error(\"Invalid JSON in bridge command\", msg);\n    return null;\n}\n\n// --- Маршрутизатор Команд ---\n\n// 1. Обработка команды СОПРЯЖЕНИЯ (permit_join)\nif (payload.command === 'permit_join') {\n    msg.topic = 'zigbee2mqtt/bridge/request/permit_join';\n    // Передаем значение (true, false, число) как есть\n    msg.payload = payload.value; \n    return msg;\n}\n\n// 2. Обработка команды ПРИНУДИТЕЛЬНОГО УДАЛЕНИЯ\nif (payload.command === 'force_remove_device') {\n    const deviceIdToRemove = payload.device_id;\n    if (!deviceIdToRemove) {\n        node.error(\"Command 'force_remove_device' is missing 'device_id'.\", msg);\n        return null;\n    }\n    msg.topic = 'zigbee2mqtt/bridge/request/device/remove';\n    // Формируем payload, который ожидает Z2M\n    msg.payload = {\n        id: deviceIdToRemove,\n        force: true // Ключевой параметр!\n    };\n    return msg;\n}\n\n// Если пришла неизвестная команда, игнорируем ее\nnode.warn(\"Received unknown bridge command: \" + payload.command);\nreturn null;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
-        "x": 180,
-        "y": 160,
+        "x": 380,
+        "y": 120,
         "wires": [
             [
-                "9c3d91a3b712bbbc"
+                "9c3d91a3b712bbbc",
+                "8f7a4dc572743653"
             ]
         ]
     },
@@ -1111,8 +1120,340 @@
         "correl": "",
         "expiry": "",
         "broker": "93539f02eaf405c3",
-        "x": 340,
-        "y": 200,
+        "x": 640,
+        "y": 160,
         "wires": []
+    },
+    {
+        "id": "05e3ba305edd6b95",
+        "type": "mqtt in",
+        "z": "77646ae0e4356714",
+        "name": "",
+        "topic": "zigbee2mqtt/bridge/response/#",
+        "qos": "2",
+        "datatype": "auto-detect",
+        "broker": "93539f02eaf405c3",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 170,
+        "y": 320,
+        "wires": [
+            [
+                "66715d80fd04add1"
+            ]
+        ]
+    },
+    {
+        "id": "66715d80fd04add1",
+        "type": "function",
+        "z": "77646ae0e4356714",
+        "name": "function 5",
+        "func": "// Извлекаем тип ответа из топика, например \"device/remove\"\nconst responseType = msg.topic.split('/').slice(3).join('/');\n\n// Формируем новый топик для облака\nmsg.topic = `iss_ai/hubs/${global.get(\"HUB_ID\")}/bridge/response`;\n\n// Оборачиваем payload в стандартную структуру\nmsg.payload = {\n    response_type: responseType,\n    data: msg.payload // Оригинальный ответ от Z2M\n};\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 280,
+        "wires": [
+            [
+                "96ba3cc24b94a57e"
+            ]
+        ]
+    },
+    {
+        "id": "96ba3cc24b94a57e",
+        "type": "mqtt out",
+        "z": "77646ae0e4356714",
+        "name": "",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 590,
+        "y": 240,
+        "wires": []
+    },
+    {
+        "id": "8f7a4dc572743653",
+        "type": "debug",
+        "z": "77646ae0e4356714",
+        "name": "debug 3",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 600,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "1111aaaa.bbbb1111",
+        "type": "exec",
+        "z": "a1b2c3d4.e5f6g7",
+        "command": "/opt/voice_assistant/venv/bin/python -u /opt/voice_assistant/wake_listener.py",
+        "addpay": "",
+        "append": "",
+        "useSpawn": "true",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "Wake Word Script",
+        "x": 370,
+        "y": 180,
+        "wires": [
+            [
+                "aaaa1111.bbbbdddd"
+            ],
+            [
+                "3333cccc.dddd3333"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "4444dddd.eeee4444",
+        "type": "inject",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Запуск при старте",
+        "props": [],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "1",
+        "topic": "",
+        "x": 140,
+        "y": 180,
+        "wires": [
+            [
+                "1111aaaa.bbbb1111"
+            ]
+        ]
+    },
+    {
+        "id": "3333cccc.dddd3333",
+        "type": "function",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Store PID",
+        "func": "if (typeof msg.payload === 'string' && msg.payload.startsWith(\"pid:\")) {\n    const pid = msg.payload.split(':')[1].trim();\n    flow.set(\"wake_word_pid\", pid);\n    node.log(\"Wake Word script started with PID: \" + pid);\n}\nreturn null;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 350,
+        "y": 240,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "2222bbbb.cccc2222",
+        "type": "function",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Build MQTT Alarm",
+        "func": "const myHubId = global.get(\"HUB_ID\") || \"unknown_hub\";\nconst detectedWord = msg.payload;\n\nmsg.topic = `iss_ai/hubs/${myHubId}/alarm`;\nmsg.payload = {\n    \"device_id\": \"voice_assistant_pi_zero\",\n    \"alarm_type\": \"wake_word_detected\",\n    \"alarm_state\": true,\n    \"alarm_level\": \"info\",\n    \"detected_word\": detectedWord,\n    \"timestamp\": Date.now()\n};\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 780,
+        "y": 120,
+        "wires": [
+            [
+                "5555eeee.ffff5555",
+                "6666ffff.00006666"
+            ]
+        ]
+    },
+    {
+        "id": "5555eeee.ffff5555",
+        "type": "mqtt out",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "To Local Broker",
+        "topic": "",
+        "qos": "1",
+        "retain": "",
+        "broker": "93539f02eaf405c3",
+        "x": 1020,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "6666ffff.00006666",
+        "type": "mqtt out",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "To Cloud Broker",
+        "topic": "",
+        "qos": "1",
+        "retain": "",
+        "broker": "0c06ccdf871dbbbc",
+        "x": 1020,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "77770000.11117777",
+        "type": "mqtt in",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Set Wake Words Command",
+        "topic": "iss_ai/hubs/+/voice_assistant/config/set",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "0c06ccdf871dbbbc",
+        "nl": false,
+        "rap": false,
+        "rh": 0,
+        "inputs": 0,
+        "x": 190,
+        "y": 380,
+        "wires": [
+            [
+                "88881111.22228888"
+            ]
+        ]
+    },
+    {
+        "id": "88881111.22228888",
+        "type": "function",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Save Words & Trigger Restart",
+        "func": "const myHubId = global.get(\"HUB_ID\");\nconst targetHubId = msg.topic.split('/')[2];\nif (myHubId !== targetHubId) { return null; }\n\nif (!msg.payload || !Array.isArray(msg.payload.wake_words)) {\n    node.error(\"Invalid payload.\", msg);\n    return null;\n}\n\nconst words = msg.payload.wake_words;\nfs.writeFileSync(\"/opt/voice_assistant/wake_words.json\", JSON.stringify(words, null, 4));\nnode.log(\"Wake words updated: \" + words.join(', '));\n\n// Просто передаем сигнал дальше, чтобы запустить цепочку перезапуска\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "const fs = global.get('fs');",
+        "finalize": "",
+        "libs": [
+            {
+                "var": "fs",
+                "module": "fs"
+            }
+        ],
+        "x": 510,
+        "y": 380,
+        "wires": [
+            [
+                "bbbb2222.cccc3333"
+            ]
+        ]
+    },
+    {
+        "id": "99992222.33339999",
+        "type": "exec",
+        "z": "a1b2c3d4.e5f6g7",
+        "command": "",
+        "addpay": "payload",
+        "append": "",
+        "useSpawn": "false",
+        "timer": "",
+        "winHide": false,
+        "oldrc": false,
+        "name": "Kill Old Process by PID",
+        "x": 590,
+        "y": 500,
+        "wires": [
+            [
+                "00003333.44440000"
+            ],
+            [],
+            []
+        ]
+    },
+    {
+        "id": "00003333.44440000",
+        "type": "trigger",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Pause & Restart",
+        "op1": "",
+        "op2": "",
+        "op1type": "nul",
+        "op2type": "nul",
+        "duration": "1",
+        "extend": false,
+        "overrideDelay": false,
+        "units": "s",
+        "reset": "",
+        "bytopic": "all",
+        "topic": "topic",
+        "outputs": 1,
+        "x": 360,
+        "y": 560,
+        "wires": [
+            [
+                "1111aaaa.bbbb1111"
+            ]
+        ]
+    },
+    {
+        "id": "aaaa1111.bbbbdddd",
+        "type": "function",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Filter & Clean Payload",
+        "func": "const payload = msg.payload.trim();\n\nif (payload.startsWith(\"WAKEWORD:\")) {\n    msg.payload = payload.substring(9);\n    return msg;\n}\n\n// Весь остальной вывод (статус, ошибки, мусор) - игнорируем\nreturn null;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 580,
+        "y": 120,
+        "wires": [
+            [
+                "2222bbbb.cccc2222"
+            ]
+        ]
+    },
+    {
+        "id": "cccc3333.dddd4444",
+        "type": "inject",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Перезапустить вручную",
+        "props": [],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "x": 170,
+        "y": 440,
+        "wires": [
+            [
+                "bbbb2222.cccc3333"
+            ]
+        ]
+    },
+    {
+        "id": "bbbb2222.cccc3333",
+        "type": "function",
+        "z": "a1b2c3d4.e5f6g7",
+        "name": "Build Kill Command",
+        "func": "const pid = flow.get(\"wake_word_pid\");\nif (pid) {\n    msg.payload = \"kill \" + pid;\n    return msg;\n}\n// Если PID не найден, просто останавливаем поток\nreturn null;",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 370,
+        "y": 500,
+        "wires": [
+            [
+                "99992222.33339999"
+            ]
+        ]
     }
 ]
