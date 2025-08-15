@@ -1,18 +1,66 @@
-homeassistant: false
-frontend: true
-permit_join: false
-
+homeassistant:
+  enabled: false
+frontend:
+  enabled: true
 mqtt:
   base_topic: zigbee2mqtt
-  server: 'mqtt://localhost:1883'
+  server: mqtt://localhost:1883
   include_device_information: true
-
 serial:
   port: /dev/serial0
   adapter: zstack
-
 advanced:
-  pan_id: __PAN_ID__
-  ext_pan_id: [__EXT_PAN_ID__]
-  network_key: [__NETWORK_KEY__]
+  pan_id: 54900
+  ext_pan_id:
+    - 21
+    - 148
+    - 136
+    - 144
+    - 61
+    - 187
+    - 133
+    - 136
+  network_key:
+    - 56
+    - 31
+    - 214
+    - 113
+    - 170
+    - 41
+    - 1
+    - 50
+    - 163
+    - 96
+    - 69
+    - 117
+    - 37
+    - 22
+    - 123
+    - 101
   log_level: info
+version: 4
+devices:
+  '0x00158d00026b41fc':
+    friendly_name: '0x00158d00026b41fc'
+  '0xa4c13826fd3fe67e':
+    friendly_name: '0xa4c13826fd3fe67e'
+  '0x54ef441000beeae5':
+    friendly_name: '0x54ef441000beeae5'
+  '0x187a3efffec75c30':
+    friendly_name: '0x187a3efffec75c30'
+  '0xa4c138674b7c32d1':
+    friendly_name: '0xa4c138674b7c32d1'
+  '0xa4c1383b411b7e91':
+    friendly_name: '0xa4c1383b411b7e91'
+availability:
+  enabled: true
+  passive:
+    timeout: 1500
+  base_topic: zigbee2mqtt
+  force_disable_retain: false
+  include_device_information: true
+  keepalive: 60
+  maximum_packet_size: 1048576
+  reject_unauthorized: true
+  server: mqtt://localhost:1883
+  version: 4
